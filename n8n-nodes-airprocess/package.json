@@ -1,19 +1,19 @@
 {
-	"name": "n8n-nodes-monservice",
+	"name": "n8n-nodes-airprocess",
 	"version": "0.1.0",
-	"description": "",
+	"description": "Community n8n node for AirProcess API integrations.",
 	"license": "MIT",
 	"homepage": "",
 	"keywords": [
 		"n8n-community-node-package"
 	],
 	"author": {
-		"name": "",
-		"email": ""
+		"name": "Angelina",
+		"email": "julia.angelina.grossi@gmail.com"
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/<...>/n8n-nodes-<...>.git"
+		"url": "https://github.com/Angelina974/n8n-connector.git"
 	},
 	"scripts": {
 		"build": "n8n-node build",
@@ -30,7 +30,9 @@
 	"n8n": {
 		"n8nNodesApiVersion": 1,
 		"strict": true,
-		"credentials": [],
+		"credentials": [
+			"dist/credentials/AirProcessApi.credentials.js"
+		],
 		"nodes": [
 			"dist/nodes/AirProcess/AirProcess.node.js"
 		]

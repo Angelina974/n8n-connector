@@ -6,6 +6,18 @@ import {
 	type INodeTypeDescription,
 } from 'n8n-workflow';
 
+const AIRPROCESS_BASE_URL = 'https://app.airprocess.com';
+const AIRPROCESS_MODELS_URL = `${AIRPROCESS_BASE_URL}/model`;
+
+const CREATE_RECORD_BODY_EXPRESSION =
+	'={{ (() => { const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}';
+
+const FIND_RECORDS_MONGO_BODY_EXPRESSION =
+	'={{ (() => { const selectedFields = ($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []; const filter = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}';
+
+/**
+ * Minimal shape returned by AirProcess for model records.
+ */
 type AirProcessModel = {
 	id?: string;
 	name?: string;
@@ -15,6 +27,9 @@ type AirProcessModel = {
 	modelName?: string;
 };
 
+/**
+ * Minimal shape returned by AirProcess for model field records.
+ */
 type AirProcessModelField = {
 	id?: string;
 	label?: string;
@@ -29,6 +44,9 @@ type AirProcessPanel = {
 	items?: AirProcessModelField[];
 };
 
+/**
+ * Converts a model payload item into an n8n options item.
+ */
 function toModelOption(item: AirProcessModel): INodePropertyOptions | null {
 	const modelId = item.modelID ?? item.modelId ?? item.id;
 	const modelName = item.ModelName ?? item.modelName ?? item.name;
@@ -47,6 +65,9 @@ function toModelOption(item: AirProcessModel): INodePropertyOptions | null {
 	};
 }
 
+/**
+ * Converts a field payload item into an n8n options item.
+ */
 function toFieldOption(item: AirProcessModelField): INodePropertyOptions | null {
 	const fieldId = item.id ?? item.fieldID ?? item.fieldId;
 	const fieldName = item.label ?? item.name ?? fieldId;
@@ -65,6 +86,9 @@ function toFieldOption(item: AirProcessModelField): INodePropertyOptions | null 
 	};
 }
 
+/**
+ * AirProcess may nest fields in "panel" containers. This function flattens those trees.
+ */
 function flattenPanelFields(items: AirProcessModelField[]): AirProcessModelField[] {
 	const output: AirProcessModelField[] = [];
 
@@ -80,6 +104,9 @@ function flattenPanelFields(items: AirProcessModelField[]): AirProcessModelField
 	return output;
 }
 
+/**
+ * Extracts fields from the different model detail payload layouts used by AirProcess.
+ */
 function extractFieldsFromModelDetail(modelData: { items?: AirProcessModelField[]; panel?: AirProcessPanel | AirProcessPanel[] }): AirProcessModelField[] {
 	const rootItems = Array.isArray(modelData?.items) ? modelData.items : [];
 	const fieldsFromPanelItems = flattenPanelFields(rootItems).filter((item) => item?.type !== 'panel');
@@ -93,80 +120,133 @@ function extractFieldsFromModelDetail(modelData: { items?: AirProcessModelField[
 	return [...fieldsFromPanelItems, ...panelItems];
 }
 
+/**
+ * Extracts list-like payloads from AirProcess responses.
+ */
+function extractListFromResponse<T>(response: unknown): T[] {
+	if (Array.isArray(response)) {
+		return response as T[];
+	}
+
+	if (response && typeof response === 'object') {
+		const objectResponse = response as Record<string, unknown>;
+		for (const key of ['data', 'models', 'items']) {
+			const value = objectResponse[key];
+			if (Array.isArray(value)) {
+				return value as T[];
+			}
+		}
+	}
+
+	return [];
+}
+
+/**
+ * Extracts a single payload object from AirProcess responses.
+ */
+function extractSingleFromResponse<T>(response: unknown): T | undefined {
+	if (Array.isArray(response)) {
+		return response[0] as T | undefined;
+	}
+
+	if (response && typeof response === 'object') {
+		const objectResponse = response as Record<string, unknown>;
+		if (objectResponse.data && typeof objectResponse.data === 'object') {
+			return objectResponse.data as T;
+		}
+		return response as T;
+	}
+
+	return undefined;
+}
+
+/**
+ * Resolves a selected model id against `/model` response variants.
+ */
+function resolveModelId(models: AirProcessModel[], selectedModelId: string): string {
+	const matchingModel = models.find(
+		(model) => model.modelID === selectedModelId || model.modelId === selectedModelId || model.id === selectedModelId,
+	);
+	return matchingModel?.id ?? selectedModelId;
+}
+
+async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProcessModel[]> {
+	const response = await loadOptions.helpers.httpRequestWithAuthentication.call(loadOptions, 'airProcessApi', {
+		method: 'GET',
+		url: AIRPROCESS_MODELS_URL,
+		json: true,
+	});
+
+	return extractListFromResponse<AirProcessModel>(response);
+}
+
+/**
+ * Shared loader used by dynamic field dropdowns ("Create" and "Find records").
+ */
+async function getModelFieldOptions(
+	loadOptions: ILoadOptionsFunctions,
+	modelIdParameterName: 'modelIdCreate' | 'modelIdFind',
+	selectedFieldsParameterName: 'createFields.field' | 'findFields.field',
+): Promise<INodePropertyOptions[]> {
+	const modelId = loadOptions.getCurrentNodeParameter(modelIdParameterName) as string;
+	if (!modelId) {
+		return [];
+	}
+
+	const models = await fetchModels(loadOptions);
+	const resolvedModelId = resolveModelId(models, modelId);
+
+	const response = await loadOptions.helpers.httpRequestWithAuthentication.call(loadOptions, 'airProcessApi', {
+		method: 'GET',
+		url: `${AIRPROCESS_MODELS_URL}/${resolvedModelId}`,
+		json: true,
+	});
+
+	const modelData = extractSingleFromResponse<{ items?: AirProcessModelField[]; panel?: AirProcessPanel | AirProcessPanel[] }>(response);
+	const fields = extractFieldsFromModelDetail(modelData ?? {});
+
+	let selectedFields: Array<{ fieldId?: string }> = [];
+	try {
+		selectedFields = (loadOptions.getCurrentNodeParameter(selectedFieldsParameterName) as Array<{ fieldId?: string }>) ?? [];
+	} catch {
+		selectedFields = [];
+	}
+
+	const selectedFieldIds = new Set<string>(
+		selectedFields
+			.map((field) => field.fieldId)
+			.filter((fieldId): fieldId is string => typeof fieldId === 'string' && fieldId.length > 0),
+	);
+
+	const seen = new Set<string>();
+	return fields
+		.map(toFieldOption)
+		.filter((option): option is INodePropertyOptions => option !== null)
+		.filter((option) => !selectedFieldIds.has(option.value as string))
+		.filter((option) => {
+			if (seen.has(option.value as string)) {
+				return false;
+			}
+			seen.add(option.value as string);
+			return true;
+		});
+}
+
 export class AirProcess implements INodeType {
 	methods = {
 		loadOptions: {
 			async getModels(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const response = await this.helpers.httpRequestWithAuthentication.call(this, 'httpBearerAuth', {
-					method: 'GET',
-					url: 'https://app.airprocess.com/model',
-					json: true,
-				});
-
-				const records: AirProcessModel[] = Array.isArray(response)
-					? (response as AirProcessModel[])
-					: ((response?.data ?? response?.models ?? response?.items ?? []) as AirProcessModel[]);
+				const records = await fetchModels(this);
 
 				return records
 					.map(toModelOption)
 					.filter((option): option is INodePropertyOptions => option !== null);
 			},
 			async getModelFields(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const modelId = this.getCurrentNodeParameter('modelIdCreate') as string;
-
-				if (!modelId) {
-					return [];
-				}
-
-				const modelsResponse = await this.helpers.httpRequestWithAuthentication.call(this, 'httpBearerAuth', {
-					method: 'GET',
-					url: 'https://app.airprocess.com/model',
-					json: true,
-				});
-
-				const models: AirProcessModel[] = Array.isArray(modelsResponse)
-					? (modelsResponse as AirProcessModel[])
-					: ((modelsResponse?.data ?? modelsResponse?.models ?? modelsResponse?.items ?? []) as AirProcessModel[]);
-
-				const matchingModel = models.find((model) => model.modelID === modelId || model.modelId === modelId || model.id === modelId);
-				const resolvedModelId = matchingModel?.id ?? modelId;
-
-				const response = await this.helpers.httpRequestWithAuthentication.call(this, 'httpBearerAuth', {
-					method: 'GET',
-					url: `https://app.airprocess.com/model/${resolvedModelId}`,
-					json: true,
-				});
-
-				const modelData = Array.isArray(response) ? response[0] : (response?.data ?? response);
-				const fields = extractFieldsFromModelDetail(
-					(modelData ?? {}) as { items?: AirProcessModelField[]; panel?: AirProcessPanel | AirProcessPanel[] },
-				);
-
-				let selectedFields: Array<{ fieldId?: string }> = [];
-				try {
-					selectedFields = (this.getCurrentNodeParameter('createFields.field') as Array<{ fieldId?: string }>) ?? [];
-				} catch {
-					selectedFields = [];
-				}
-
-				const selectedFieldIds = new Set<string>(
-					selectedFields
-						.map((field) => field.fieldId)
-						.filter((fieldId): fieldId is string => typeof fieldId === 'string' && fieldId.length > 0),
-				);
-
-				const seen = new Set<string>();
-				return fields
-					.map(toFieldOption)
-					.filter((option): option is INodePropertyOptions => option !== null)
-					.filter((option) => !selectedFieldIds.has(option.value as string))
-					.filter((option) => {
-						if (seen.has(option.value as string)) {
-							return false;
-						}
-						seen.add(option.value as string);
-						return true;
-					});
+				return await getModelFieldOptions(this, 'modelIdCreate', 'createFields.field');
+			},
+			async getModelFieldsForFind(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return await getModelFieldOptions(this, 'modelIdFind', 'findFields.field');
 			},
 		},
 	};
@@ -178,7 +258,7 @@ export class AirProcess implements INodeType {
 		group: ['input'],
 		version: 1,
 		subtitle:
-			'={{$parameter["routeType"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
+			'={{$parameter["routeType"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdFind"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
 		description: 'Interact with the AirProcess API grouped by HTTP method',
 		defaults: {
 			name: 'AirProcess',
@@ -188,12 +268,12 @@ export class AirProcess implements INodeType {
 		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
-				name: 'httpBearerAuth',
-				required: false,
+				name: 'airProcessApi',
+				required: true,
 			},
 		],
 		requestDefaults: {
-			baseURL: 'https://app.airprocess.com',
+			baseURL: AIRPROCESS_BASE_URL,
 			headers: {
 				Accept: 'application/json',
 			},
@@ -206,24 +286,24 @@ export class AirProcess implements INodeType {
 				noDataExpression: true,
 				options: [
 					{
-						name: 'GET',
-						value: 'get',
-					},
-					{
-						name: 'POST',
-						value: 'post',
-					},
-					{
-						name: 'PATCH',
-						value: 'patch',
+						name: 'Custom',
+						value: 'custom',
 					},
 					{
 						name: 'DELETE',
 						value: 'delete',
 					},
 					{
-						name: 'Custom',
-						value: 'custom',
+						name: 'GET',
+						value: 'get',
+					},
+					{
+						name: 'PATCH',
+						value: 'patch',
+					},
+					{
+						name: 'POST',
+						value: 'post',
 					},
 				],
 				default: 'get',
@@ -251,28 +331,6 @@ export class AirProcess implements INodeType {
 						},
 					},
 					{
-						name: 'Get Records',
-						value: 'getRecords',
-						action: 'Get all records',
-						routing: {
-							request: {
-								method: 'GET',
-								url: '=/{{$parameter.modelIdGet}}',
-							},
-						},
-					},
-					{
-						name: 'Get Users',
-						value: 'getUsers',
-						action: 'Get users',
-						routing: {
-							request: {
-								method: 'GET',
-								url: '/account',
-							},
-						},
-					},
-					{
 						name: 'Get Applications',
 						value: 'getApplications',
 						action: 'Get applications',
@@ -291,6 +349,39 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/group',
+							},
+						},
+					},
+					{
+						name: 'Get Models',
+						value: 'getModelsRoute',
+						action: 'Get models',
+						routing: {
+							request: {
+								method: 'GET',
+								url: '/model',
+							},
+						},
+					},
+					{
+						name: 'Get Records',
+						value: 'getRecords',
+						action: 'Get all records',
+						routing: {
+							request: {
+								method: 'GET',
+								url: '=/{{$parameter.modelIdGet}}',
+							},
+						},
+					},
+					{
+						name: 'Get Users',
+						value: 'getUsers',
+						action: 'Get users',
+						routing: {
+							request: {
+								method: 'GET',
+								url: '/account',
 							},
 						},
 					},
@@ -327,7 +418,24 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'POST',
 								url: '=/{{$parameter.modelIdCreate}}',
-								body: '={{ (() => { const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}',
+								// Build payload from JSON or from selected fields, then enforce a generated UUID.
+								body: CREATE_RECORD_BODY_EXPRESSION,
+								headers: {
+									'Content-Type': 'application/json',
+								},
+							},
+						},
+					},
+					{
+						name: 'Find Records (Mongo)',
+						value: 'findRecordsMongo',
+						action: 'Find records with mongo syntax',
+						routing: {
+							request: {
+								method: 'POST',
+								url: '=/{{$parameter.modelIdFind}}',
+								// Build a mongo search payload from selected filters and pagination values.
+								body: FIND_RECORDS_MONGO_BODY_EXPRESSION,
 								headers: {
 									'Content-Type': 'application/json',
 								},
@@ -538,7 +646,7 @@ export class AirProcess implements INodeType {
 				description: 'JSON body sent to AirProcess',
 			},
 			{
-				displayName: 'Model',
+				displayName: 'Model Name or ID',
 				name: 'modelIdGet',
 				type: 'options',
 				required: true,
@@ -552,10 +660,10 @@ export class AirProcess implements INodeType {
 						getOperation: ['getRecord', 'getRecords'],
 					},
 				},
-				description: 'Select the model used in the path',
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
-				displayName: 'Model',
+				displayName: 'Model Name or ID',
 				name: 'modelIdCreate',
 				type: 'options',
 				required: true,
@@ -569,10 +677,27 @@ export class AirProcess implements INodeType {
 						postOperation: ['createRecord'],
 					},
 				},
-				description: 'Select the model used in the path',
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
-				displayName: 'Model',
+				displayName: 'Model Name or ID',
+				name: 'modelIdFind',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModels',
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						routeType: ['post'],
+						postOperation: ['findRecordsMongo'],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+			},
+			{
+				displayName: 'Model Name or ID',
 				name: 'modelIdPatch',
 				type: 'options',
 				required: true,
@@ -586,10 +711,10 @@ export class AirProcess implements INodeType {
 						patchOperation: ['updateRecord'],
 					},
 				},
-				description: 'Select the model used in the path',
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
-				displayName: 'Model',
+				displayName: 'Model Name or ID',
 				name: 'modelIdDelete',
 				type: 'options',
 				required: true,
@@ -603,7 +728,7 @@ export class AirProcess implements INodeType {
 						deleteOperation: ['deleteRecord', 'sendToTrash'],
 					},
 				},
-				description: 'Select the model used in the path',
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
 				displayName: 'Record ID',
@@ -709,7 +834,7 @@ export class AirProcess implements INodeType {
 						displayName: 'Field',
 						values: [
 							{
-								displayName: 'Name',
+								displayName: 'Field Name or ID',
 								name: 'fieldId',
 								type: 'options',
 								typeOptions: {
@@ -717,7 +842,7 @@ export class AirProcess implements INodeType {
 									loadOptionsDependsOn: ['modelIdCreate', 'createFields.field'],
 								},
 								default: '',
-								description: 'Select a model field',
+								description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 							},
 							{
 								displayName: 'Value',
@@ -743,6 +868,78 @@ export class AirProcess implements INodeType {
 					},
 				},
 				description: 'JSON body sent to AirProcess',
+			},
+			{
+				displayName: 'Skip',
+				name: 'findSkip',
+				type: 'number',
+				required: true,
+				default: 0,
+				displayOptions: {
+					show: {
+						routeType: ['post'],
+						postOperation: ['findRecordsMongo'],
+					},
+				},
+				description: 'Number of records to skip',
+			},
+			{
+				displayName: 'Limit',
+				name: 'findLimit',
+				type: 'number',
+				required: true,
+				default: 10,
+				displayOptions: {
+					show: {
+						routeType: ['post'],
+						postOperation: ['findRecordsMongo'],
+					},
+				},
+				description: 'Maximum number of records to return',
+			},
+			{
+				displayName: 'Filters',
+				name: 'findFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Filter',
+				default: {
+					field: [],
+				},
+				displayOptions: {
+					show: {
+						routeType: ['post'],
+						postOperation: ['findRecordsMongo'],
+					},
+				},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Field',
+						values: [
+							{
+								displayName: 'Field Name or ID',
+								name: 'fieldId',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getModelFieldsForFind',
+									loadOptionsDependsOn: ['modelIdFind', 'findFields.field'],
+								},
+								default: '',
+								description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+							},
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+				],
+				description: 'Build the mongo filter by selecting model fields and values',
 			},
 			{
 				displayName: 'Username',
