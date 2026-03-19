@@ -12,6 +12,8 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_MODE: "true"
     defaults:
       run:
         working-directory: n8n-nodes-airprocess
@@ -38,7 +40,6 @@ jobs:
         run: npm run build
 
       - name: Publish with provenance
-        run: npm publish --provenance --access public
+        run: RELEASE_MODE=true npm publish --provenance --access public
         env:
-          RELEASE_MODE: "true"
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
