@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-airprocess",
-	"version": "0.1.5",
+	"version": "0.1.6",
 	"description": "Community n8n node for AirProcess API integrations.",
 	"license": "MIT",
 	"homepage": "",
