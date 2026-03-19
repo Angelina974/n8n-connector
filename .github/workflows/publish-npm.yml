@@ -41,9 +41,4 @@ jobs:
         run: npm run build
 
       - name: Publish with provenance
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm whoami --registry=https://registry.npmjs.org
-          RELEASE_MODE=true npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.N8N_NODES_AIRPROCESS }}
+        run: RELEASE_MODE=true npm publish --provenance --access public
