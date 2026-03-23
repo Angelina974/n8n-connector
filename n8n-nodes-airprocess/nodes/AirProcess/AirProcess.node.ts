@@ -8,12 +8,36 @@ import {
 
 const AIRPROCESS_BASE_URL = 'https://app.airprocess.com';
 const AIRPROCESS_MODELS_URL = `${AIRPROCESS_BASE_URL}/model`;
+const CUSTOM_URL_EXPRESSION =
+	'={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}';
+const CUSTOM_BODY_EXPRESSION =
+	'={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}';
+const CUSTOM_HEADERS_EXPRESSION =
+	'={{ $parameter.customSendHeaders ? (typeof $parameter.customHeaders === "string" ? JSON.parse($parameter.customHeaders) : $parameter.customHeaders) : {} }}' as unknown as Record<
+		string,
+		string
+	>;
 
+/**
+ * n8n expression used by "Create a Record".
+ * Supports two input modes (raw JSON or selected fields), then enforces a generated UUID.
+ */
 const CREATE_RECORD_BODY_EXPRESSION =
 	'={{ (() => { const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}';
 
+/**
+ * n8n expression used by "Find Records (Mongo)".
+ * Builds the API body from selected filter fields and pagination options.
+ */
 const FIND_RECORDS_MONGO_BODY_EXPRESSION =
 	'={{ (() => { const selectedFields = ($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []; const filter = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}';
+
+/**
+ * n8n expression used by "Update a Record".
+ * Supports raw JSON or selected fields.
+ */
+const UPDATE_RECORD_BODY_EXPRESSION =
+	'={{ (() => { if ($parameter.updateBodyMode === "fields") { const selectedFields = ($parameter.updateFields && $parameter.updateFields.field) ? $parameter.updateFields.field : []; return selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); } return typeof $parameter.bodyUpdate === "string" ? JSON.parse($parameter.bodyUpdate) : $parameter.bodyUpdate; })() }}';
 
 /**
  * Minimal shape returned by AirProcess for model records.
@@ -44,8 +68,16 @@ type AirProcessPanel = {
 	items?: AirProcessModelField[];
 };
 
+type AirProcessModelDetail = {
+	items?: AirProcessModelField[];
+	panel?: AirProcessPanel | AirProcessPanel[];
+};
+
 /**
  * Converts a model payload item into an n8n options item.
+ *
+ * @param item A raw model object returned by AirProcess.
+ * @returns A dropdown option compatible with n8n, or `null` when the item is invalid.
  */
 function toModelOption(item: AirProcessModel): INodePropertyOptions | null {
 	const modelId = item.modelID ?? item.modelId ?? item.id;
@@ -67,10 +99,14 @@ function toModelOption(item: AirProcessModel): INodePropertyOptions | null {
 
 /**
  * Converts a field payload item into an n8n options item.
+ *
+ * @param item A raw field object returned by AirProcess.
+ * @returns A dropdown option compatible with n8n, or `null` when the item is invalid.
  */
 function toFieldOption(item: AirProcessModelField): INodePropertyOptions | null {
 	const fieldId = item.id ?? item.fieldID ?? item.fieldId;
 	const fieldName = item.label ?? item.name ?? fieldId;
+	const fieldType = typeof item.type === 'string' && item.type.length > 0 ? item.type : 'unknown';
 
 	if (typeof fieldId !== 'string' || fieldId.length === 0) {
 		return null;
@@ -81,13 +117,16 @@ function toFieldOption(item: AirProcessModelField): INodePropertyOptions | null 
 	}
 
 	return {
-		name: fieldName.trim().length > 0 ? fieldName : `Field ${fieldId}`,
+		name: `${fieldName.trim().length > 0 ? fieldName : `Field ${fieldId}`} (${fieldType})`,
 		value: fieldId,
 	};
 }
 
 /**
  * AirProcess may nest fields in "panel" containers. This function flattens those trees.
+ *
+ * @param items Input list that can include nested panel containers.
+ * @returns Flattened list preserving non-panel fields.
  */
 function flattenPanelFields(items: AirProcessModelField[]): AirProcessModelField[] {
 	const output: AirProcessModelField[] = [];
@@ -106,8 +145,11 @@ function flattenPanelFields(items: AirProcessModelField[]): AirProcessModelField
 
 /**
  * Extracts fields from the different model detail payload layouts used by AirProcess.
+ *
+ * @param modelData Model detail payload as returned by `/model/{id}`.
+ * @returns Flat list of fields, including fields inside nested panels.
  */
-function extractFieldsFromModelDetail(modelData: { items?: AirProcessModelField[]; panel?: AirProcessPanel | AirProcessPanel[] }): AirProcessModelField[] {
+function extractFieldsFromModelDetail(modelData: AirProcessModelDetail): AirProcessModelField[] {
 	const rootItems = Array.isArray(modelData?.items) ? modelData.items : [];
 	const fieldsFromPanelItems = flattenPanelFields(rootItems).filter((item) => item?.type !== 'panel');
 
@@ -122,6 +164,9 @@ function extractFieldsFromModelDetail(modelData: { items?: AirProcessModelField[
 
 /**
  * Extracts list-like payloads from AirProcess responses.
+ *
+ * @param response Raw HTTP response payload.
+ * @returns A typed list from known list keys (`data`, `models`, `items`) or an empty array.
  */
 function extractListFromResponse<T>(response: unknown): T[] {
 	if (Array.isArray(response)) {
@@ -143,6 +188,9 @@ function extractListFromResponse<T>(response: unknown): T[] {
 
 /**
  * Extracts a single payload object from AirProcess responses.
+ *
+ * @param response Raw HTTP response payload.
+ * @returns A typed object when present, otherwise `undefined`.
  */
 function extractSingleFromResponse<T>(response: unknown): T | undefined {
 	if (Array.isArray(response)) {
@@ -162,6 +210,10 @@ function extractSingleFromResponse<T>(response: unknown): T | undefined {
 
 /**
  * Resolves a selected model id against `/model` response variants.
+ *
+ * @param models Model list returned by `/model`.
+ * @param selectedModelId Value selected in the n8n dropdown.
+ * @returns The resolved model id usable for detail calls.
  */
 function resolveModelId(models: AirProcessModel[], selectedModelId: string): string {
 	const matchingModel = models.find(
@@ -170,6 +222,12 @@ function resolveModelId(models: AirProcessModel[], selectedModelId: string): str
 	return matchingModel?.id ?? selectedModelId;
 }
 
+/**
+ * Fetches models with the credential currently configured on the node.
+ *
+ * @param loadOptions n8n load-options context.
+ * @returns List of models normalized from AirProcess response variants.
+ */
 async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProcessModel[]> {
 	const response = await loadOptions.helpers.httpRequestWithAuthentication.call(loadOptions, 'airProcessApi', {
 		method: 'GET',
@@ -182,11 +240,16 @@ async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProce
 
 /**
  * Shared loader used by dynamic field dropdowns ("Create" and "Find records").
+ *
+ * @param loadOptions n8n load-options context.
+ * @param modelIdParameterName Name of the node parameter holding the model id.
+ * @param selectedFieldsParameterName Name of the fixedCollection parameter for selected fields.
+ * @returns Unique field options for the selected model.
  */
 async function getModelFieldOptions(
 	loadOptions: ILoadOptionsFunctions,
-	modelIdParameterName: 'modelIdCreate' | 'modelIdFind',
-	selectedFieldsParameterName: 'createFields.field' | 'findFields.field',
+	modelIdParameterName: 'modelIdCreate' | 'modelIdFind' | 'modelIdPatch',
+	selectedFieldsParameterName: 'createFields.field' | 'findFields.field' | 'updateFields.field',
 ): Promise<INodePropertyOptions[]> {
 	const modelId = loadOptions.getCurrentNodeParameter(modelIdParameterName) as string;
 	if (!modelId) {
@@ -202,27 +265,17 @@ async function getModelFieldOptions(
 		json: true,
 	});
 
-	const modelData = extractSingleFromResponse<{ items?: AirProcessModelField[]; panel?: AirProcessPanel | AirProcessPanel[] }>(response);
+	const modelData = extractSingleFromResponse<AirProcessModelDetail>(response);
 	const fields = extractFieldsFromModelDetail(modelData ?? {});
 
-	let selectedFields: Array<{ fieldId?: string }> = [];
-	try {
-		selectedFields = (loadOptions.getCurrentNodeParameter(selectedFieldsParameterName) as Array<{ fieldId?: string }>) ?? [];
-	} catch {
-		selectedFields = [];
-	}
-
-	const selectedFieldIds = new Set<string>(
-		selectedFields
-			.map((field) => field.fieldId)
-			.filter((fieldId): fieldId is string => typeof fieldId === 'string' && fieldId.length > 0),
-	);
+	// Do not exclude already selected fields from options.
+	// Keeping all options ensures n8n can always resolve labels when reopening the node.
+	void selectedFieldsParameterName;
 
 	const seen = new Set<string>();
 	return fields
 		.map(toFieldOption)
 		.filter((option): option is INodePropertyOptions => option !== null)
-		.filter((option) => !selectedFieldIds.has(option.value as string))
 		.filter((option) => {
 			if (seen.has(option.value as string)) {
 				return false;
@@ -232,6 +285,10 @@ async function getModelFieldOptions(
 		});
 }
 
+/**
+ * n8n community node for AirProcess.
+ * Exposes grouped API routes and dynamic model/field dropdowns.
+ */
 export class AirProcess implements INodeType {
 	methods = {
 		loadOptions: {
@@ -248,6 +305,9 @@ export class AirProcess implements INodeType {
 			async getModelFieldsForFind(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return await getModelFieldOptions(this, 'modelIdFind', 'findFields.field');
 			},
+			async getModelFieldsForUpdate(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return await getModelFieldOptions(this, 'modelIdPatch', 'updateFields.field');
+			},
 		},
 	};
 
@@ -258,7 +318,7 @@ export class AirProcess implements INodeType {
 		group: ['input'],
 		version: 1,
 		subtitle:
-			'={{$parameter["routeType"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdFind"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
+			'={{$parameter["resource"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdFind"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
 		description: 'Interact with the AirProcess API grouped by HTTP method',
 		defaults: {
 			name: 'AirProcess',
@@ -281,12 +341,12 @@ export class AirProcess implements INodeType {
 		properties: [
 			{
 				displayName: 'Route',
-				name: 'routeType',
+				name: 'resource',
 				type: 'options',
 				noDataExpression: true,
 				options: [
 					{
-						name: 'Custom',
+						name: 'Custom API Call',
 						value: 'custom',
 					},
 					{
@@ -310,15 +370,26 @@ export class AirProcess implements INodeType {
 			},
 			{
 				displayName: 'Operation',
-				name: 'getOperation',
+				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						routeType: ['get'],
+						resource: ['get'],
 					},
 				},
 				options: [
+					{
+						name: 'Find One Model',
+						value: 'findOneModel',
+						action: 'Find one model',
+						routing: {
+							request: {
+								method: 'GET',
+								url: '=/model/{{$parameter.modelIdGetOneModel}}',
+							},
+						},
+					},
 					{
 						name: 'Get a Record',
 						value: 'getRecord',
@@ -401,12 +472,12 @@ export class AirProcess implements INodeType {
 			},
 			{
 				displayName: 'Operation',
-				name: 'postOperation',
+				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						routeType: ['post'],
+						resource: ['post'],
 					},
 				},
 				options: [
@@ -462,12 +533,12 @@ export class AirProcess implements INodeType {
 			},
 			{
 				displayName: 'Operation',
-				name: 'patchOperation',
+				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						routeType: ['patch'],
+						resource: ['patch'],
 					},
 				},
 				options: [
@@ -479,7 +550,7 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'PATCH',
 								url: '=/{{$parameter.modelIdPatch}}/{{$parameter.recordIdPatch}}',
-								body: '={{ typeof $parameter.bodyUpdate === "string" ? JSON.parse($parameter.bodyUpdate) : $parameter.bodyUpdate }}',
+								body: UPDATE_RECORD_BODY_EXPRESSION,
 								headers: {
 									'Content-Type': 'application/json',
 								},
@@ -491,12 +562,12 @@ export class AirProcess implements INodeType {
 			},
 			{
 				displayName: 'Operation',
-				name: 'deleteOperation',
+				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						routeType: ['delete'],
+						resource: ['delete'],
 					},
 				},
 				options: [
@@ -530,16 +601,29 @@ export class AirProcess implements INodeType {
 				default: 'deleteRecord',
 			},
 			{
-				displayName: 'Method',
-				name: 'customOperation',
+				displayName: 'Operation',
+				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						routeType: ['custom'],
+						resource: ['custom'],
 					},
 				},
 				options: [
+					{
+						name: 'DELETE',
+						value: 'customDelete',
+						action: 'Call a custom DELETE route',
+						routing: {
+							request: {
+								method: 'DELETE',
+								url: CUSTOM_URL_EXPRESSION,
+								body: CUSTOM_BODY_EXPRESSION,
+								headers: CUSTOM_HEADERS_EXPRESSION,
+							},
+						},
+					},
 					{
 						name: 'GET',
 						value: 'customGet',
@@ -547,26 +631,9 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}',
-								body: '={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}',
-								headers: {
-									'Content-Type': 'application/json',
-								},
-							},
-						},
-					},
-					{
-						name: 'POST',
-						value: 'customPost',
-						action: 'Call a custom POST route',
-						routing: {
-							request: {
-								method: 'POST',
-								url: '={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}',
-								body: '={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}',
-								headers: {
-									'Content-Type': 'application/json',
-								},
+								url: CUSTOM_URL_EXPRESSION,
+								body: CUSTOM_BODY_EXPRESSION,
+								headers: CUSTOM_HEADERS_EXPRESSION,
 							},
 						},
 					},
@@ -577,26 +644,22 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'PATCH',
-								url: '={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}',
-								body: '={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}',
-								headers: {
-									'Content-Type': 'application/json',
-								},
+								url: CUSTOM_URL_EXPRESSION,
+								body: CUSTOM_BODY_EXPRESSION,
+								headers: CUSTOM_HEADERS_EXPRESSION,
 							},
 						},
 					},
 					{
-						name: 'DELETE',
-						value: 'customDelete',
-						action: 'Call a custom DELETE route',
+						name: 'POST',
+						value: 'customPost',
+						action: 'Call a custom POST route',
 						routing: {
 							request: {
-								method: 'DELETE',
-								url: '={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}',
-								body: '={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}',
-								headers: {
-									'Content-Type': 'application/json',
-								},
+								method: 'POST',
+								url: CUSTOM_URL_EXPRESSION,
+								body: CUSTOM_BODY_EXPRESSION,
+								headers: CUSTOM_HEADERS_EXPRESSION,
 							},
 						},
 					},
@@ -612,11 +675,35 @@ export class AirProcess implements INodeType {
 				placeholder: '/your/custom/path',
 				displayOptions: {
 					show: {
-						routeType: ['custom'],
-						customOperation: ['customGet', 'customPost', 'customPatch', 'customDelete'],
+						resource: ['custom'],
 					},
 				},
 				description: 'Custom route path or full URL',
+			},
+			{
+				displayName: 'Send Headers',
+				name: 'customSendHeaders',
+				type: 'boolean',
+				default: false,
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+					},
+				},
+				description: 'Whether to include custom headers',
+			},
+			{
+				displayName: 'Headers',
+				name: 'customHeaders',
+				type: 'json',
+				default: '{}',
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						customSendHeaders: [true],
+					},
+				},
+				description: 'Custom headers to send with the request',
 			},
 			{
 				displayName: 'Send Body',
@@ -625,8 +712,7 @@ export class AirProcess implements INodeType {
 				default: false,
 				displayOptions: {
 					show: {
-						routeType: ['custom'],
-						customOperation: ['customGet', 'customPost', 'customPatch', 'customDelete'],
+						resource: ['custom'],
 					},
 				},
 				description: 'Whether to include a request body',
@@ -638,12 +724,28 @@ export class AirProcess implements INodeType {
 				default: '{}',
 				displayOptions: {
 					show: {
-						routeType: ['custom'],
-						customOperation: ['customGet', 'customPost', 'customPatch', 'customDelete'],
+						resource: ['custom'],
 						customSendBody: [true],
 					},
 				},
 				description: 'JSON body sent to AirProcess',
+			},
+			{
+				displayName: 'Model Name or ID',
+				name: 'modelIdGetOneModel',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModels',
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['get'],
+						operation: ['findOneModel'],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
 				displayName: 'Model Name or ID',
@@ -656,8 +758,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['get'],
-						getOperation: ['getRecord', 'getRecords'],
+						resource: ['get'],
+						operation: ['getRecord', 'getRecords'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -673,8 +775,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['createRecord'],
+						resource: ['post'],
+						operation: ['createRecord'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -690,8 +792,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['findRecordsMongo'],
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -707,8 +809,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['patch'],
-						patchOperation: ['updateRecord'],
+						resource: ['patch'],
+						operation: ['updateRecord'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -724,8 +826,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['delete'],
-						deleteOperation: ['deleteRecord', 'sendToTrash'],
+						resource: ['delete'],
+						operation: ['deleteRecord', 'sendToTrash'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -738,8 +840,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['get'],
-						getOperation: ['getRecord'],
+						resource: ['get'],
+						operation: ['getRecord'],
 					},
 				},
 				description: 'Record identifier used in the path',
@@ -752,8 +854,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['patch'],
-						patchOperation: ['updateRecord'],
+						resource: ['patch'],
+						operation: ['updateRecord'],
 					},
 				},
 				description: 'Record identifier used in the path',
@@ -766,8 +868,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['delete'],
-						deleteOperation: ['deleteRecord', 'sendToTrash'],
+						resource: ['delete'],
+						operation: ['deleteRecord', 'sendToTrash'],
 					},
 				},
 				description: 'Record identifier used in the path',
@@ -789,8 +891,8 @@ export class AirProcess implements INodeType {
 				default: 'json',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['createRecord'],
+						resource: ['post'],
+						operation: ['createRecord'],
 					},
 				},
 				description: 'Choose whether to send raw JSON or build the body from fields',
@@ -803,8 +905,8 @@ export class AirProcess implements INodeType {
 				default: '{\n  "kdx42bqx": "Bob wilson",\n  "id": "34be8047-4652-4685-808d-85df6a80ddb7"\n}',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['createRecord'],
+						resource: ['post'],
+						operation: ['createRecord'],
 						createBodyMode: ['json'],
 					},
 				},
@@ -823,8 +925,8 @@ export class AirProcess implements INodeType {
 				},
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['createRecord'],
+						resource: ['post'],
+						operation: ['createRecord'],
 						createBodyMode: ['fields'],
 					},
 				},
@@ -856,6 +958,29 @@ export class AirProcess implements INodeType {
 				description: 'Build the body by selecting model fields and values',
 			},
 			{
+				displayName: 'Specify Body',
+				name: 'updateBodyMode',
+				type: 'options',
+				options: [
+					{
+						name: 'JSON',
+						value: 'json',
+					},
+					{
+						name: 'Using Fields Below',
+						value: 'fields',
+					},
+				],
+				default: 'json',
+				displayOptions: {
+					show: {
+						resource: ['patch'],
+						operation: ['updateRecord'],
+					},
+				},
+				description: 'Choose whether to send raw JSON or build the body from fields',
+			},
+			{
 				displayName: 'Body',
 				name: 'bodyUpdate',
 				type: 'json',
@@ -863,11 +988,57 @@ export class AirProcess implements INodeType {
 				default: '{\n  "kdx42bqx": "Bob wilson"\n}',
 				displayOptions: {
 					show: {
-						routeType: ['patch'],
-						patchOperation: ['updateRecord'],
+						resource: ['patch'],
+						operation: ['updateRecord'],
+						updateBodyMode: ['json'],
 					},
 				},
 				description: 'JSON body sent to AirProcess',
+			},
+			{
+				displayName: 'Fields',
+				name: 'updateFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Field',
+				default: {
+					field: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['patch'],
+						operation: ['updateRecord'],
+						updateBodyMode: ['fields'],
+					},
+				},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Field',
+						values: [
+							{
+								displayName: 'Field Name or ID',
+								name: 'fieldId',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getModelFieldsForUpdate',
+									loadOptionsDependsOn: ['modelIdPatch', 'updateFields.field'],
+								},
+								default: '',
+								description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+							},
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+				],
+				description: 'Build the body by selecting model fields and values',
 			},
 			{
 				displayName: 'Skip',
@@ -877,8 +1048,8 @@ export class AirProcess implements INodeType {
 				default: 0,
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['findRecordsMongo'],
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
 					},
 				},
 				description: 'Number of records to skip',
@@ -891,8 +1062,8 @@ export class AirProcess implements INodeType {
 				default: 10,
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['findRecordsMongo'],
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
 					},
 				},
 				description: 'Maximum number of records to return',
@@ -910,8 +1081,8 @@ export class AirProcess implements INodeType {
 				},
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['findRecordsMongo'],
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
 					},
 				},
 				options: [
@@ -949,8 +1120,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['login'],
+						resource: ['post'],
+						operation: ['login'],
 					},
 				},
 				description: 'Username used to authenticate',
@@ -966,8 +1137,8 @@ export class AirProcess implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						routeType: ['post'],
-						postOperation: ['login'],
+						resource: ['post'],
+						operation: ['login'],
 					},
 				},
 				description: 'Password used to authenticate',
@@ -975,3 +1146,6 @@ export class AirProcess implements INodeType {
 		],
 	};
 }
+
+
+
