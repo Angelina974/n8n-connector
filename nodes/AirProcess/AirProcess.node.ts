@@ -329,7 +329,12 @@ export class AirProcess implements INodeType {
 		credentials: [
 			{
 				name: 'airProcessApi',
-				required: true,
+				required: false,
+				displayOptions: {
+					hide: {
+						operation: ['login'],
+					},
+				},
 			},
 		],
 		requestDefaults: {
