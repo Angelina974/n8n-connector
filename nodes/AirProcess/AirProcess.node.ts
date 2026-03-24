@@ -12,6 +12,7 @@ const CUSTOM_URL_EXPRESSION =
 	'={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}';
 const CUSTOM_BODY_EXPRESSION =
 	'={{ $parameter.customSendBody ? (typeof $parameter.customBody === "string" ? JSON.parse($parameter.customBody) : $parameter.customBody) : undefined }}';
+const AUTHORIZATION_HEADER_EXPRESSION = '={{ undefined }}';
 const CUSTOM_HEADERS_EXPRESSION =
 	'={{ $parameter.customSendHeaders ? (typeof $parameter.customHeaders === "string" ? JSON.parse($parameter.customHeaders) : $parameter.customHeaders) : {} }}' as unknown as Record<
 		string,
@@ -30,7 +31,7 @@ const CREATE_RECORD_BODY_EXPRESSION =
  * Builds the API body from selected filter fields and pagination options.
  */
 const FIND_RECORDS_MONGO_BODY_EXPRESSION =
-	'={{ (() => { const selectedFields = ($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []; const filter = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}';
+	'={{ (() => { const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}';
 
 /**
  * n8n expression used by "Update a Record".
@@ -229,10 +230,14 @@ function resolveModelId(models: AirProcessModel[], selectedModelId: string): str
  * @returns List of models normalized from AirProcess response variants.
  */
 async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProcessModel[]> {
+	const credentials = (await loadOptions.getCredentials('airProcessApi')) as { token?: unknown };
+	const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
+
 	const response = await loadOptions.helpers.httpRequestWithAuthentication.call(loadOptions, 'airProcessApi', {
 		method: 'GET',
 		url: AIRPROCESS_MODELS_URL,
 		json: true,
+		headers: token.length > 0 ? { Authorization: `Bearer ${token}` } : undefined,
 	});
 
 	return extractListFromResponse<AirProcessModel>(response);
@@ -258,11 +263,14 @@ async function getModelFieldOptions(
 
 	const models = await fetchModels(loadOptions);
 	const resolvedModelId = resolveModelId(models, modelId);
+	const credentials = (await loadOptions.getCredentials('airProcessApi')) as { token?: unknown };
+	const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
 
 	const response = await loadOptions.helpers.httpRequestWithAuthentication.call(loadOptions, 'airProcessApi', {
 		method: 'GET',
 		url: `${AIRPROCESS_MODELS_URL}/${resolvedModelId}`,
 		json: true,
+		headers: token.length > 0 ? { Authorization: `Bearer ${token}` } : undefined,
 	});
 
 	const modelData = extractSingleFromResponse<AirProcessModelDetail>(response);
@@ -329,19 +337,11 @@ export class AirProcess implements INodeType {
 		credentials: [
 			{
 				name: 'airProcessApi',
-				required: false,
-				displayOptions: {
-					hide: {
-						operation: ['login'],
-					},
-				},
+				required: true,
 			},
 		],
 		requestDefaults: {
 			baseURL: AIRPROCESS_BASE_URL,
-			headers: {
-				Accept: 'application/json',
-			},
 		},
 		properties: [
 			{
@@ -392,6 +392,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '=/model/{{$parameter.modelIdGetOneModel}}',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -403,6 +406,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '=/{{$parameter.modelIdGet}}/{{$parameter.recordIdGet}}',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -414,6 +420,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/application',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -425,6 +434,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/group',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -436,6 +448,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/model',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -447,6 +462,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '=/{{$parameter.modelIdGet}}',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -458,6 +476,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/account',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -469,6 +490,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: '/workspace',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -497,6 +521,7 @@ export class AirProcess implements INodeType {
 								// Build payload from JSON or from selected fields, then enforce a generated UUID.
 								body: CREATE_RECORD_BODY_EXPRESSION,
 								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
 								},
 							},
@@ -513,21 +538,7 @@ export class AirProcess implements INodeType {
 								// Build a mongo search payload from selected filters and pagination values.
 								body: FIND_RECORDS_MONGO_BODY_EXPRESSION,
 								headers: {
-									'Content-Type': 'application/json',
-								},
-							},
-						},
-					},
-					{
-						name: 'Login',
-						value: 'login',
-						action: 'Login',
-						routing: {
-							request: {
-								method: 'POST',
-								url: '/login',
-								body: '={{ { username: $parameter.username, password: $parameter.password } }}',
-								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
 								},
 							},
@@ -557,6 +568,7 @@ export class AirProcess implements INodeType {
 								url: '=/{{$parameter.modelIdPatch}}/{{$parameter.recordIdPatch}}',
 								body: UPDATE_RECORD_BODY_EXPRESSION,
 								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
 								},
 							},
@@ -584,6 +596,9 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'DELETE',
 								url: '=/{{$parameter.modelIdDelete}}/{{$parameter.recordIdDelete}}',
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+								},
 							},
 						},
 					},
@@ -597,6 +612,7 @@ export class AirProcess implements INodeType {
 								url: '=/{{$parameter.modelIdDelete}}/{{$parameter.recordIdDelete}}',
 								body: '={{ { sendToTrash: true } }}',
 								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
 								},
 							},
@@ -1074,6 +1090,43 @@ export class AirProcess implements INodeType {
 				description: 'Maximum number of records to return',
 			},
 			{
+				displayName: 'Specify Filters',
+				name: 'findFilterMode',
+				type: 'options',
+				options: [
+					{
+						name: 'Using Fields Below',
+						value: 'fields',
+					},
+					{
+						name: 'JSON',
+						value: 'json',
+					},
+				],
+				default: 'fields',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
+					},
+				},
+				description: 'Choose whether to build filters from fields or send raw JSON',
+			},
+			{
+				displayName: 'Filters (JSON)',
+				name: 'findFilterJson',
+				type: 'json',
+				default: '{\n  "flddHGP8O6VWZGpaj": "Done"\n}',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsMongo'],
+						findFilterMode: ['json'],
+					},
+				},
+				description: 'Mongo filter JSON sent in the "filter" property',
+			},
+			{
 				displayName: 'Filters',
 				name: 'findFields',
 				type: 'fixedCollection',
@@ -1088,6 +1141,7 @@ export class AirProcess implements INodeType {
 					show: {
 						resource: ['post'],
 						operation: ['findRecordsMongo'],
+						findFilterMode: ['fields'],
 					},
 				},
 				options: [
@@ -1116,37 +1170,6 @@ export class AirProcess implements INodeType {
 					},
 				],
 				description: 'Build the mongo filter by selecting model fields and values',
-			},
-			{
-				displayName: 'Username',
-				name: 'username',
-				type: 'string',
-				required: true,
-				default: '',
-				displayOptions: {
-					show: {
-						resource: ['post'],
-						operation: ['login'],
-					},
-				},
-				description: 'Username used to authenticate',
-			},
-			{
-				displayName: 'Password',
-				name: 'password',
-				type: 'string',
-				typeOptions: {
-					password: true,
-				},
-				required: true,
-				default: '',
-				displayOptions: {
-					show: {
-						resource: ['post'],
-						operation: ['login'],
-					},
-				},
-				description: 'Password used to authenticate',
 			},
 		],
 	};

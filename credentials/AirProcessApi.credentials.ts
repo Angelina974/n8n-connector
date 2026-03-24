@@ -21,7 +21,7 @@ export class AirProcessApi implements ICredentialType {
 				password: true,
 			},
 			default: '',
-			required: true,
+			required: false,
 		},
 	];
 
@@ -29,7 +29,7 @@ export class AirProcessApi implements ICredentialType {
 		type: 'generic' as const,
 		properties: {
 			headers: {
-				Authorization: '=Bearer {{$credentials.token}}',
+				Authorization: '={{ $credentials.token ? "Bearer " + $credentials.token : undefined }}',
 			},
 		},
 	};
