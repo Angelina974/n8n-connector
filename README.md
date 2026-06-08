@@ -107,6 +107,43 @@ npm run lint
 4. Create a GitHub Release (or run the `Publish n8n Node to npm` workflow manually).
 5. The workflow publishes with provenance (`npm publish --provenance`).
 
+## Publish a public npm package manually
+
+Use this when you want to publish the package directly from your terminal instead of relying on GitHub Actions.
+
+1. Make sure the version in `package.json` is new.
+2. Build the package:
+
+```bash
+npm run build
+```
+
+3. Log in to npm:
+
+```bash
+npm login
+```
+
+4. Publish the package publicly:
+
+```bash
+npm run release
+```
+
+Notes:
+
+- Do not use `npm publish` directly in this project. The `prepublishOnly` hook runs `n8n-node prerelease` and blocks direct publishing.
+- If your npm account has two-factor authentication enabled for publishing, npm will ask for an `OTP` (one-time password).
+- The `OTP` code comes from the authenticator app linked to your npm account, such as Google Authenticator, Authy, Microsoft Authenticator, or 1Password.
+- If the publish fails because the version already exists on npm, bump the version again and retry.
+- For a first public publish, npm may require public access:
+
+```bash
+npm publish --access public --ignore-scripts
+```
+
+Only use this fallback if you explicitly need to bypass the project publish hook.
+
 Workflow file:
 
 - `.github/workflows/publish-npm.yml`
