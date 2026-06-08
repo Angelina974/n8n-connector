@@ -1,0 +1,78 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.9.0
+2 info using node@v24.14.0
+3 silly config load:file:C:\Program Files\nodejs\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\julia\n8n-connector\.npmrc
+5 silly config load:file:C:\Users\julia\.npmrc
+6 silly config load:file:C:\Users\julia\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm publish
+8 verbose argv "publish" "--access" "public" "--cache" ".npm-cache"
+9 verbose logfile logs-max:10 dir:C:\Users\julia\n8n-connector\.npm-cache\_logs\2026-03-24T11_35_34_608Z-
+10 verbose logfile C:\Users\julia\n8n-connector\.npm-cache\_logs\2026-03-24T11_35_34_608Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose publish [ '.' ]
+13 http fetch GET 200 https://registry.npmjs.org/npm 137ms
+14 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+15 warn publish npm auto-corrected some errors in your package.json when publishing.  Please run "npm pkg fix" to address these errors.
+16 warn publish errors corrected:
+16 warn publish "repository.url" was normalized to "git+https://github.com/Angelina974/n8n-connector.git"
+17 notice
+18 notice 📦  n8n-nodes-airprocess@0.1.14
+19 notice Tarball Contents
+20 notice 1.1kB LICENSE.md
+20 notice 3.2kB README.md
+20 notice 599B dist/credentials/AirProcessApi.credentials.d.ts
+20 notice 1.3kB dist/credentials/AirProcessApi.credentials.js
+20 notice 773B dist/credentials/AirProcessApi.credentials.js.map
+20 notice 3.1kB dist/icons/airprocess.dark.svg
+20 notice 3.1kB dist/icons/airprocess.svg
+20 notice 652B dist/nodes/AirProcess/AirProcess.node.d.ts
+20 notice 45.4kB dist/nodes/AirProcess/AirProcess.node.js
+20 notice 20.8kB dist/nodes/AirProcess/AirProcess.node.js.map
+20 notice 274B dist/nodes/AirProcess/AirProcess.node.json
+20 notice 1.3kB dist/package.json
+20 notice 31.0kB dist/tsconfig.tsbuildinfo
+20 notice 1.1kB package.json
+21 notice Tarball Details
+22 notice name: n8n-nodes-airprocess
+23 notice version: 0.1.14
+24 notice filename: n8n-nodes-airprocess-0.1.14.tgz
+25 notice package size: 23.7 kB
+26 notice unpacked size: 113.7 kB
+27 notice shasum: 379da9d9083a53e1ac4e25027a2d912f55fec779
+28 notice integrity: sha512-czuSuYFLvgJTG[...]vwYkEk+m7pDbg==
+29 notice total files: 14
+30 notice
+31 http fetch GET 200 https://registry.npmjs.org/n8n-nodes-airprocess 38ms (cache miss)
+32 notice Publishing to https://registry.npmjs.org/ with tag latest and public access
+33 http fetch PUT 404 https://registry.npmjs.org/n8n-nodes-airprocess 219ms
+34 verbose stack HttpErrorGeneral: 404 Not Found - PUT https://registry.npmjs.org/n8n-nodes-airprocess - Not found
+34 verbose stack     at C:\Program Files\nodejs\node_modules\npm\node_modules\npm-registry-fetch\lib\check-response.js:103:15
+34 verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+34 verbose stack     at async publish (C:\Program Files\nodejs\node_modules\npm\node_modules\libnpmpublish\lib\publish.js:53:15)
+34 verbose stack     at async otplease (C:\Program Files\nodejs\node_modules\npm\lib\utils\auth.js:8:12)
+34 verbose stack     at async #publish (C:\Program Files\nodejs\node_modules\npm\lib\commands\publish.js:188:7)
+34 verbose stack     at async Publish.exec (C:\Program Files\nodejs\node_modules\npm\lib\commands\publish.js:47:5)
+34 verbose stack     at async Npm.exec (C:\Program Files\nodejs\node_modules\npm\lib\npm.js:208:9)
+34 verbose stack     at async module.exports (C:\Program Files\nodejs\node_modules\npm\lib\cli\entry.js:67:5)
+35 verbose statusCode 404
+36 verbose pkgid n8n-nodes-airprocess@0.1.14
+37 error code E404
+38 error 404 Not Found - PUT https://registry.npmjs.org/n8n-nodes-airprocess - Not found
+39 error 404
+40 error 404  The requested resource 'n8n-nodes-airprocess@0.1.14' could not be found or you do not have permission to access it.
+41 error 404
+42 error 404 Note that you can also install from a
+43 error 404 tarball, folder, http url, or git url.
+44 verbose cwd C:\Users\julia\n8n-connector
+45 verbose os Windows_NT 10.0.26200
+46 verbose node v24.14.0
+47 verbose npm  v11.9.0
+48 notice
+48 notice New [33mminor[39m version of npm available! [33m11.9.0[39m -> [34m11.12.0[39m
+48 notice Changelog: [34mhttps://github.com/npm/cli/releases/tag/v11.12.0[39m
+48 notice To update run: [4mnpm install -g npm@11.12.0[24m
+48 notice  { force: true, Symbol(proc-log.meta): true }
+49 verbose exit 1
+50 verbose code 1
+51 error A complete log of this run can be found in: C:\Users\julia\n8n-connector\.npm-cache\_logs\2026-03-24T11_35_34_608Z-debug-0.log

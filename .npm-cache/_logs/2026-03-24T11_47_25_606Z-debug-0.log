@@ -1,0 +1,60 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.9.0
+2 info using node@v24.14.0
+3 silly config load:file:C:\Program Files\nodejs\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\julia\n8n-connector\.npmrc
+5 silly config load:file:C:\Users\julia\.npmrc
+6 silly config load:file:C:\Users\julia\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm publish
+8 verbose argv "publish" "--access" "public" "--cache" ".npm-cache"
+9 verbose logfile logs-max:10 dir:C:\Users\julia\n8n-connector\.npm-cache\_logs\2026-03-24T11_47_25_606Z-
+10 verbose logfile C:\Users\julia\n8n-connector\.npm-cache\_logs\2026-03-24T11_47_25_606Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose publish [ '.' ]
+13 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+14 warn publish npm auto-corrected some errors in your package.json when publishing.  Please run "npm pkg fix" to address these errors.
+15 warn publish errors corrected:
+15 warn publish "repository.url" was normalized to "git+https://github.com/Angelina974/n8n-connector.git"
+16 notice
+17 notice 📦  n8n-nodes-airprocess@0.1.14
+18 notice Tarball Contents
+19 notice 1.1kB LICENSE.md
+19 notice 3.2kB README.md
+19 notice 599B dist/credentials/AirProcessApi.credentials.d.ts
+19 notice 1.3kB dist/credentials/AirProcessApi.credentials.js
+19 notice 773B dist/credentials/AirProcessApi.credentials.js.map
+19 notice 3.1kB dist/icons/airprocess.dark.svg
+19 notice 3.1kB dist/icons/airprocess.svg
+19 notice 652B dist/nodes/AirProcess/AirProcess.node.d.ts
+19 notice 45.4kB dist/nodes/AirProcess/AirProcess.node.js
+19 notice 20.8kB dist/nodes/AirProcess/AirProcess.node.js.map
+19 notice 274B dist/nodes/AirProcess/AirProcess.node.json
+19 notice 1.3kB dist/package.json
+19 notice 31.0kB dist/tsconfig.tsbuildinfo
+19 notice 1.1kB package.json
+20 notice Tarball Details
+21 notice name: n8n-nodes-airprocess
+22 notice version: 0.1.14
+23 notice filename: n8n-nodes-airprocess-0.1.14.tgz
+24 notice package size: 23.7 kB
+25 notice unpacked size: 113.7 kB
+26 notice shasum: 379da9d9083a53e1ac4e25027a2d912f55fec779
+27 notice integrity: sha512-czuSuYFLvgJTG[...]vwYkEk+m7pDbg==
+28 notice total files: 14
+29 notice
+30 http fetch GET 200 https://registry.npmjs.org/n8n-nodes-airprocess 750ms (cache revalidated)
+31 notice Publishing to https://registry.npmjs.org/ with tag latest and public access
+32 http fetch PUT 401 https://registry.npmjs.org/n8n-nodes-airprocess 294ms
+33 verbose web auth opening url pair
+34 http fetch GET 202 https://registry.npmjs.org/-/v1/done?authId=*** 225ms
+35 http fetch GET 202 https://registry.npmjs.org/-/v1/done?authId=*** 211ms
+36 http fetch GET 202 https://registry.npmjs.org/-/v1/done?authId=*** 207ms
+37 http fetch GET 200 https://registry.npmjs.org/-/v1/done?authId=*** 217ms
+38 verbose web auth done-check finished
+39 http fetch PUT 200 https://registry.npmjs.org/n8n-nodes-airprocess 1467ms
+40 verbose cwd C:\Users\julia\n8n-connector
+41 verbose os Windows_NT 10.0.26200
+42 verbose node v24.14.0
+43 verbose npm  v11.9.0
+44 verbose exit 0
+45 info ok

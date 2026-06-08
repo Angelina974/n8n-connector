@@ -18,27 +18,29 @@ const CUSTOM_HEADERS_EXPRESSION =
 		string,
 		string
 	>;
+const RESOLVE_COLLECTION_VALUE_EXPRESSION =
+	'(value) => typeof value === "string" && value.startsWith("={{") ? $evaluateExpression(value.slice(1)) : value';
 
 /**
  * n8n expression used by "Create a Record".
  * Supports two input modes (raw JSON or selected fields), then enforces a generated UUID.
  */
 const CREATE_RECORD_BODY_EXPRESSION =
-	'={{ (() => { const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}';
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}`;
 
 /**
  * n8n expression used by "Find Records (Mongo)".
  * Builds the API body from selected filter fields and pagination options.
  */
 const FIND_RECORDS_MONGO_BODY_EXPRESSION =
-	'={{ (() => { const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}';
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}`;
 
 /**
  * n8n expression used by "Update a Record".
  * Supports raw JSON or selected fields.
  */
 const UPDATE_RECORD_BODY_EXPRESSION =
-	'={{ (() => { if ($parameter.updateBodyMode === "fields") { const selectedFields = ($parameter.updateFields && $parameter.updateFields.field) ? $parameter.updateFields.field : []; return selectedFields.reduce((acc, current) => { if (current.fieldId) { acc[current.fieldId] = current.value; } return acc; }, {}); } return typeof $parameter.bodyUpdate === "string" ? JSON.parse($parameter.bodyUpdate) : $parameter.bodyUpdate; })() }}';
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; if ($parameter.updateBodyMode === "fields") { const selectedFields = ($parameter.updateFields && $parameter.updateFields.field) ? $parameter.updateFields.field : []; return selectedFields.reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); } return typeof $parameter.bodyUpdate === "string" ? JSON.parse($parameter.bodyUpdate) : $parameter.bodyUpdate; })() }}`;
 
 /**
  * Minimal shape returned by AirProcess for model records.
