@@ -1,9 +1,9 @@
 {
 	"name": "n8n-nodes-airprocess",
-	"version": "0.1.16",
+	"version": "0.1.17",
 	"description": "Community n8n node for AirProcess API integrations.",
 	"license": "MIT",
-	"homepage": "",
+	"homepage": "https://github.com/Angelina974/n8n-connector#readme",
 	"keywords": [
 		"n8n-community-node-package"
 	],
@@ -14,6 +14,10 @@
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/Angelina974/n8n-connector.git"
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
 	},
 	"scripts": {
 		"build": "n8n-node build",

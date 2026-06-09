@@ -103,9 +103,15 @@ npm run lint
 
 1. Create an npm automation token and add it in your GitHub repository secrets as `NPM_TOKEN`.
 2. Bump the package version in `package.json`.
-3. Commit and push your changes.
-4. Create a GitHub Release (or run the `Publish n8n Node to npm` workflow manually).
-5. The workflow publishes with provenance (`npm publish --provenance`).
+3. Commit and push your changes to GitHub.
+4. Create a GitHub Release, or run the `Publish n8n Node to npm` workflow manually from the Actions tab.
+5. GitHub Actions publishes the package from a GitHub-hosted runner with npm provenance enabled.
+
+Important:
+
+- For n8n Creator Portal verification, do not publish from your local machine.
+- The repository must be public, and the published version must come from GitHub Actions.
+- The package homepage should point to the repository or documentation page.
 
 ## Publish a public npm package manually
 
