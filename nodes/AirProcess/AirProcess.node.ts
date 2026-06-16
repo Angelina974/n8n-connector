@@ -1,10 +1,23 @@
 import {
+	type IDataObject,
+	type IExecuteSingleFunctions,
+	type IHttpRequestOptions,
 	NodeConnectionTypes,
 	type ILoadOptionsFunctions,
 	type INodePropertyOptions,
 	type INodeType,
 	type INodeTypeDescription,
 } from 'n8n-workflow';
+
+declare const Blob: new (
+	blobParts?: Array<string | Uint8Array>,
+	options?: { type?: string },
+) => unknown;
+declare const FormData: new () => {
+	append(name: string, value: string): void;
+	append(name: string, value: unknown, fileName?: string): void;
+};
+declare const URLSearchParams: new () => { append(name: string, value: string): void };
 
 const AIRPROCESS_BASE_URL = 'https://app.airprocess.com';
 const AIRPROCESS_MODELS_URL = `${AIRPROCESS_BASE_URL}/model`;
@@ -18,15 +31,11 @@ const CUSTOM_HEADERS_EXPRESSION =
 		string,
 		string
 	>;
+const GET_REQUEST_OPTIONS_PARAMETER = 'getRequestOptions';
+const POST_REQUEST_OPTIONS_PARAMETER = 'postRequestOptions';
+const CUSTOM_REQUEST_OPTIONS_PARAMETER = 'customRequestOptions';
 const RESOLVE_COLLECTION_VALUE_EXPRESSION =
 	'(value) => typeof value === "string" && value.startsWith("={{") ? $evaluateExpression(value.slice(1)) : value';
-
-/**
- * n8n expression used by "Create a Record".
- * Supports two input modes (raw JSON or selected fields), then enforces a generated UUID.
- */
-const CREATE_RECORD_BODY_EXPRESSION =
-	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const generatedId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); }); if ($parameter.createBodyMode === "fields") { const selectedFields = ($parameter.createFields && $parameter.createFields.field) ? $parameter.createFields.field : []; const payloadFromFields = selectedFields.reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); return { ...payloadFromFields, id: generatedId }; } const payload = typeof $parameter.bodyCreate === "string" ? JSON.parse($parameter.bodyCreate) : $parameter.bodyCreate; return { ...payload, id: generatedId }; })() }}`;
 
 /**
  * n8n expression used by "Find Records (Mongo)".
@@ -209,6 +218,340 @@ function extractSingleFromResponse<T>(response: unknown): T | undefined {
 	}
 
 	return undefined;
+}
+
+function generateUuid(): string {
+	return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+		const random = Math.floor(Math.random() * 16);
+		const value = character === 'x' ? random : (random & 0x3) | 0x8;
+		return value.toString(16);
+	});
+}
+
+function stringifyBodyValue(value: unknown): string {
+	if (value === null || value === undefined) {
+		return '';
+	}
+
+	if (typeof value === 'object') {
+		return JSON.stringify(value);
+	}
+
+	return String(value);
+}
+
+function getCreateFieldPayload(
+	executeFunctions: IExecuteSingleFunctions,
+	parameterName: 'createFields' | 'createFormFields',
+): IDataObject {
+	const parameterValue = executeFunctions.getNodeParameter(parameterName, {}) as {
+		field?: Array<{ fieldId?: unknown; value?: unknown }>;
+	};
+	const selectedFields = Array.isArray(parameterValue.field) ? parameterValue.field : [];
+	const payload: IDataObject = {};
+
+	for (const current of selectedFields) {
+		const fieldId =
+			typeof current.fieldId === 'string'
+				? current.fieldId.trim()
+				: current.fieldId === undefined || current.fieldId === null
+					? ''
+					: String(current.fieldId).trim();
+
+		if (fieldId.length === 0) {
+			continue;
+		}
+
+		payload[fieldId] = current.value as never;
+	}
+
+	return payload;
+}
+
+function getCreateRecordJsonPayload(executeFunctions: IExecuteSingleFunctions): IDataObject {
+	const bodyMode = executeFunctions.getNodeParameter('createBodyMode', 'json') as 'json' | 'fields';
+
+	if (bodyMode === 'fields') {
+		return {
+			...getCreateFieldPayload(executeFunctions, 'createFields'),
+			id: generateUuid(),
+		};
+	}
+
+	const bodyValue = executeFunctions.getNodeParameter('bodyCreate', {}) as IDataObject | string;
+	const payload =
+		typeof bodyValue === 'string'
+			? (JSON.parse(bodyValue) as IDataObject)
+			: ((bodyValue ?? {}) as IDataObject);
+
+	return {
+		...payload,
+		id: generateUuid(),
+	};
+}
+
+function getCreateRecordFormPayload(executeFunctions: IExecuteSingleFunctions): IDataObject {
+	return {
+		...getCreateFieldPayload(executeFunctions, 'createFormFields'),
+		id: generateUuid(),
+	};
+}
+
+function getCustomParameterPayload(executeFunctions: IExecuteSingleFunctions): IDataObject {
+	const parameterValue = executeFunctions.getNodeParameter('customFormFields', {}) as {
+		parameter?: Array<{ name?: unknown; value?: unknown }>;
+	};
+	const parameters = Array.isArray(parameterValue.parameter) ? parameterValue.parameter : [];
+	const payload: IDataObject = {};
+
+	for (const current of parameters) {
+		const name =
+			typeof current.name === 'string'
+				? current.name.trim()
+				: current.name === undefined || current.name === null
+					? ''
+					: String(current.name).trim();
+
+		if (name.length === 0) {
+			continue;
+		}
+
+		payload[name] = current.value as never;
+	}
+
+	return payload;
+}
+
+function getCustomFormDataFields(executeFunctions: IExecuteSingleFunctions): Array<{
+	inputDataFieldName?: string;
+	name: string;
+	type: 'binaryFile' | 'formData';
+	value?: unknown;
+}> {
+	const parameterValue = executeFunctions.getNodeParameter('customFormDataFields', {}) as {
+		bodyField?: Array<{
+			inputDataFieldName?: unknown;
+			name?: unknown;
+			type?: unknown;
+			value?: unknown;
+		}>;
+	};
+	const bodyFields = Array.isArray(parameterValue.bodyField) ? parameterValue.bodyField : [];
+
+	return bodyFields
+		.map((current) => {
+			const name =
+				typeof current.name === 'string'
+					? current.name.trim()
+					: current.name === undefined || current.name === null
+						? ''
+						: String(current.name).trim();
+			const type: 'binaryFile' | 'formData' =
+				current.type === 'binaryFile' ? 'binaryFile' : 'formData';
+			const inputDataFieldName =
+				typeof current.inputDataFieldName === 'string'
+					? current.inputDataFieldName.trim()
+					: current.inputDataFieldName === undefined || current.inputDataFieldName === null
+						? undefined
+						: String(current.inputDataFieldName).trim();
+
+			return {
+				inputDataFieldName,
+				name,
+				type,
+				value: current.value,
+			};
+		})
+		.filter((field) => field.name.length > 0);
+}
+
+async function configureCreateRecordRequest(
+	this: IExecuteSingleFunctions,
+	requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	const bodyContentType = this.getNodeParameter('createBodyContentType', 'json') as
+		| 'binaryFile'
+		| 'formData'
+		| 'formUrlencoded'
+		| 'json'
+		| 'raw';
+	const headers: IDataObject = {
+		...(requestOptions.headers ?? {}),
+	};
+
+	switch (bodyContentType) {
+		case 'binaryFile': {
+			const inputDataFieldName = this.getNodeParameter('createBinaryInputDataFieldName', 'data') as string;
+			const contentType = this.getNodeParameter(
+				'createBinaryContentType',
+				'application/octet-stream',
+			) as string;
+			requestOptions.body = await this.helpers.getBinaryDataBuffer(inputDataFieldName);
+			headers['Content-Type'] = contentType;
+			break;
+		}
+		case 'formData': {
+			const payload = getCreateRecordFormPayload(this);
+			const formData = new FormData();
+
+			for (const [key, value] of Object.entries(payload)) {
+				formData.append(key, stringifyBodyValue(value));
+			}
+
+			requestOptions.body = formData as unknown as IHttpRequestOptions['body'];
+			delete headers['Content-Type'];
+			break;
+		}
+		case 'formUrlencoded': {
+			const payload = getCreateRecordFormPayload(this);
+			const params = new URLSearchParams();
+
+			for (const [key, value] of Object.entries(payload)) {
+				params.append(key, stringifyBodyValue(value));
+			}
+
+			requestOptions.body = params as unknown as IHttpRequestOptions['body'];
+			headers['Content-Type'] = 'application/x-www-form-urlencoded';
+			break;
+		}
+		case 'raw': {
+			const rawBody = this.getNodeParameter('createRawBody', '') as string;
+			const rawContentType = this.getNodeParameter('createRawContentType', 'text/plain') as string;
+			requestOptions.body = rawBody;
+			headers['Content-Type'] = rawContentType;
+			break;
+		}
+		case 'json':
+		default: {
+			requestOptions.body = getCreateRecordJsonPayload(this);
+			headers['Content-Type'] = 'application/json';
+			break;
+		}
+	}
+
+	requestOptions.headers = headers;
+	return requestOptions;
+}
+
+async function configureCustomTypedBodyRequest(
+	this: IExecuteSingleFunctions,
+	requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	const sendBody = this.getNodeParameter('customSendBody', false) as boolean;
+
+	if (!sendBody) {
+		return requestOptions;
+	}
+
+	const bodyContentType = this.getNodeParameter('customBodyContentType', 'json') as
+		| 'binaryFile'
+		| 'formData'
+		| 'formUrlencoded'
+		| 'json'
+		| 'raw';
+	const headers: IDataObject = {
+		...(requestOptions.headers ?? {}),
+	};
+
+	switch (bodyContentType) {
+		case 'binaryFile': {
+			const inputDataFieldName = this.getNodeParameter('customBinaryInputDataFieldName', 'data') as string;
+			const contentType = this.getNodeParameter(
+				'customBinaryContentType',
+				'application/octet-stream',
+			) as string;
+			requestOptions.body = await this.helpers.getBinaryDataBuffer(inputDataFieldName);
+			headers['Content-Type'] = contentType;
+			break;
+		}
+		case 'formData': {
+			const payload = getCustomFormDataFields(this);
+			const formData = new FormData();
+
+			for (const field of payload) {
+				if (field.type === 'binaryFile') {
+					if (!field.inputDataFieldName) {
+						continue;
+					}
+
+					const binaryMetadata = this.helpers.assertBinaryData(field.inputDataFieldName);
+					const buffer = await this.helpers.getBinaryDataBuffer(field.inputDataFieldName);
+					const blob = new Blob([buffer], {
+						type: binaryMetadata.mimeType || 'application/octet-stream',
+					});
+
+					formData.append(field.name, blob, binaryMetadata.fileName || field.inputDataFieldName);
+					continue;
+				}
+
+				formData.append(field.name, stringifyBodyValue(field.value));
+			}
+
+			requestOptions.body = formData as unknown as IHttpRequestOptions['body'];
+			delete headers['Content-Type'];
+			break;
+		}
+		case 'formUrlencoded': {
+			const payload = getCustomParameterPayload(this);
+			const params = new URLSearchParams();
+
+			for (const [key, value] of Object.entries(payload)) {
+				params.append(key, stringifyBodyValue(value));
+			}
+
+			requestOptions.body = params as unknown as IHttpRequestOptions['body'];
+			headers['Content-Type'] = 'application/x-www-form-urlencoded';
+			break;
+		}
+		case 'raw': {
+			const rawBody = this.getNodeParameter('customRawBody', '') as string;
+			const rawContentType = this.getNodeParameter('customRawContentType', 'text/plain') as string;
+			requestOptions.body = rawBody;
+			headers['Content-Type'] = rawContentType;
+			break;
+		}
+		case 'json':
+		default: {
+			const bodyValue = this.getNodeParameter('customBody', {}) as IDataObject | string;
+			requestOptions.body =
+				typeof bodyValue === 'string'
+					? (JSON.parse(bodyValue) as IDataObject)
+					: ((bodyValue ?? {}) as IDataObject);
+			headers['Content-Type'] = 'application/json';
+			break;
+		}
+	}
+
+	requestOptions.headers = headers;
+	return requestOptions;
+}
+
+/**
+ * Builds shared request option expressions for GET/POST routes.
+ *
+ * These map the node option collection to n8n's HTTP request settings so we can
+ * expose familiar HTTP node controls without rewriting the whole node execution layer.
+ */
+function buildHttpNodeLikeRequestOptions(
+	parameterName:
+		| typeof CUSTOM_REQUEST_OPTIONS_PARAMETER
+		| typeof GET_REQUEST_OPTIONS_PARAMETER
+		| typeof POST_REQUEST_OPTIONS_PARAMETER,
+) {
+	return {
+		encoding:
+			`={{ $parameter.${parameterName}.responseFormat === "file" ? "arraybuffer" : ($parameter.${parameterName}.responseFormat === "json" ? "json" : ($parameter.${parameterName}.responseFormat === "text" ? "text" : undefined)) }}` as unknown as IHttpRequestOptions['encoding'],
+		skipSslCertificateValidation: `={{ $parameter.${parameterName}.ignoreSslIssues ?? false }}` as unknown as boolean,
+		disableFollowRedirect: `={{ $parameter.${parameterName}.followRedirects === false }}` as unknown as boolean,
+		maxRedirects: `={{ $parameter.${parameterName}.followRedirects === false ? undefined : $parameter.${parameterName}.maxRedirects }}` as unknown as number,
+		returnFullResponse: `={{ $parameter.${parameterName}.includeHeadersAndStatus ?? false }}` as unknown as boolean,
+		ignoreHttpStatusErrors: `={{ $parameter.${parameterName}.neverError ?? false }}` as unknown as boolean,
+		proxy:
+			`={{ (() => { const proxyValue = $parameter.${parameterName}.proxy; if (!proxyValue) { return undefined; } const normalized = proxyValue.includes("://") ? proxyValue : "http://" + proxyValue; const parsed = new URL(normalized); return { protocol: parsed.protocol.replace(":", ""), host: parsed.hostname, port: Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)), auth: parsed.username ? { username: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) } : undefined }; })() }}` as unknown as NonNullable<
+				IHttpRequestOptions['proxy']
+			>,
+		timeout: `={{ $parameter.${parameterName}.timeout ?? undefined }}` as unknown as number,
+	};
 }
 
 /**
@@ -397,6 +740,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -411,6 +755,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -425,6 +770,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -439,6 +785,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -453,6 +800,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -467,6 +815,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -481,6 +830,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -495,6 +845,7 @@ export class AirProcess implements INodeType {
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
+								...buildHttpNodeLikeRequestOptions(GET_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -520,12 +871,14 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'POST',
 								url: '=/{{$parameter.modelIdCreate}}',
-								// Build payload from JSON or from selected fields, then enforce a generated UUID.
-								body: CREATE_RECORD_BODY_EXPRESSION,
+								body: '={{ {} }}' as unknown as IDataObject,
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
-									'Content-Type': 'application/json',
 								},
+								...buildHttpNodeLikeRequestOptions(POST_REQUEST_OPTIONS_PARAMETER),
+							},
+							send: {
+								preSend: [configureCreateRecordRequest],
 							},
 						},
 					},
@@ -543,6 +896,7 @@ export class AirProcess implements INodeType {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
 								},
+								...buildHttpNodeLikeRequestOptions(POST_REQUEST_OPTIONS_PARAMETER),
 							},
 						},
 					},
@@ -655,8 +1009,24 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'GET',
 								url: CUSTOM_URL_EXPRESSION,
-								body: CUSTOM_BODY_EXPRESSION,
+								body: '={{ {} }}' as unknown as IDataObject,
 								headers: CUSTOM_HEADERS_EXPRESSION,
+								...buildHttpNodeLikeRequestOptions(CUSTOM_REQUEST_OPTIONS_PARAMETER),
+							},
+							send: {
+								preSend: [configureCustomTypedBodyRequest],
+							},
+							output: {
+								postReceive: [
+									{
+										type: 'binaryData',
+										enabled: '={{ $parameter.customRequestOptions.responseFormat === "file" }}',
+										properties: {
+											destinationProperty:
+												'={{ $parameter.customRequestOptions.responseBinaryPropertyName || "data" }}',
+										},
+									},
+								],
 							},
 						},
 					},
@@ -681,13 +1051,274 @@ export class AirProcess implements INodeType {
 							request: {
 								method: 'POST',
 								url: CUSTOM_URL_EXPRESSION,
-								body: CUSTOM_BODY_EXPRESSION,
+								body: '={{ {} }}' as unknown as IDataObject,
 								headers: CUSTOM_HEADERS_EXPRESSION,
+								...buildHttpNodeLikeRequestOptions(CUSTOM_REQUEST_OPTIONS_PARAMETER),
+							},
+							send: {
+								preSend: [configureCustomTypedBodyRequest],
+							},
+							output: {
+								postReceive: [
+									{
+										type: 'binaryData',
+										enabled: '={{ $parameter.customRequestOptions.responseFormat === "file" }}',
+										properties: {
+											destinationProperty:
+												'={{ $parameter.customRequestOptions.responseBinaryPropertyName || "data" }}',
+										},
+									},
+								],
 							},
 						},
 					},
 				],
 				default: 'customGet',
+			},
+			{
+				displayName: 'Options',
+				name: CUSTOM_REQUEST_OPTIONS_PARAMETER,
+				type: 'collection',
+				placeholder: 'Add option',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Follow Redirects',
+						name: 'followRedirects',
+						type: 'boolean',
+						default: true,
+						description: 'Whether to follow HTTP redirects',
+					},
+					{
+						displayName: 'Ignore SSL Issues',
+						name: 'ignoreSslIssues',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to allow the request even when SSL certificate validation fails',
+					},
+					{
+						displayName: 'Include Response Headers and Status',
+						name: 'includeHeadersAndStatus',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the full response instead of only the body',
+					},
+					{
+						displayName: 'Max Redirects',
+						name: 'maxRedirects',
+						type: 'number',
+						default: 21,
+						displayOptions: {
+							show: {
+								followRedirects: [true],
+							},
+						},
+						description: 'Maximum number of redirects to follow',
+					},
+					{
+						displayName: 'Never Error',
+						name: 'neverError',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the response even when the status code is not 2xx',
+					},
+					{
+						displayName: 'Proxy',
+						name: 'proxy',
+						type: 'string',
+						default: '',
+						placeholder: 'http://proxy.example.com:8080',
+						description: 'HTTP proxy to use for this request',
+					},
+					{
+						displayName: 'Response Binary Property',
+						name: 'responseBinaryPropertyName',
+						type: 'string',
+						default: 'data',
+						displayOptions: {
+							show: {
+								responseFormat: ['file'],
+							},
+						},
+						description: 'Name of the binary property where the downloaded file will be stored',
+					},
+					{
+						displayName: 'Response Format',
+						name: 'responseFormat',
+						type: 'options',
+						options: [
+							{
+								name: 'Autodetect',
+								value: 'autodetect',
+							},
+							{
+								name: 'File',
+								value: 'file',
+							},
+							{
+								name: 'JSON',
+								value: 'json',
+							},
+							{
+								name: 'Text',
+								value: 'text',
+							},
+						],
+						default: 'autodetect',
+						description: 'How to interpret the response body',
+					},
+					{
+						displayName: 'Timeout',
+						name: 'timeout',
+						type: 'number',
+						default: 30000,
+						description: 'Time to wait for the initial response in milliseconds',
+					},
+				],
+			},
+			{
+				displayName: 'Options',
+				name: GET_REQUEST_OPTIONS_PARAMETER,
+				type: 'collection',
+				placeholder: 'Add option',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['get'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Follow Redirects',
+						name: 'followRedirects',
+						type: 'boolean',
+						default: true,
+						description: 'Whether to follow HTTP redirects',
+					},
+					{
+						displayName: 'Ignore SSL Issues',
+						name: 'ignoreSslIssues',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to allow the request even when SSL certificate validation fails',
+					},
+					{
+						displayName: 'Include Response Headers and Status',
+						name: 'includeHeadersAndStatus',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the full response instead of only the body',
+					},
+					{
+						displayName: 'Max Redirects',
+						name: 'maxRedirects',
+						type: 'number',
+						default: 21,
+						displayOptions: {
+							show: {
+								followRedirects: [true],
+							},
+						},
+						description: 'Maximum number of redirects to follow',
+					},
+					{
+						displayName: 'Never Error',
+						name: 'neverError',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the response even when the status code is not 2xx',
+					},
+					{
+						displayName: 'Proxy',
+						name: 'proxy',
+						type: 'string',
+						default: '',
+						placeholder: 'http://proxy.example.com:8080',
+						description: 'HTTP proxy to use for this request',
+					},
+					{
+						displayName: 'Timeout',
+						name: 'timeout',
+						type: 'number',
+						default: 30000,
+						description: 'Time to wait for the initial response in milliseconds',
+					},
+				],
+			},
+			{
+				displayName: 'Options',
+				name: POST_REQUEST_OPTIONS_PARAMETER,
+				type: 'collection',
+				placeholder: 'Add option',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['post'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Follow Redirects',
+						name: 'followRedirects',
+						type: 'boolean',
+						default: true,
+						description: 'Whether to follow HTTP redirects',
+					},
+					{
+						displayName: 'Ignore SSL Issues',
+						name: 'ignoreSslIssues',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to allow the request even when SSL certificate validation fails',
+					},
+					{
+						displayName: 'Include Response Headers and Status',
+						name: 'includeHeadersAndStatus',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the full response instead of only the body',
+					},
+					{
+						displayName: 'Max Redirects',
+						name: 'maxRedirects',
+						type: 'number',
+						default: 21,
+						displayOptions: {
+							show: {
+								followRedirects: [true],
+							},
+						},
+						description: 'Maximum number of redirects to follow',
+					},
+					{
+						displayName: 'Never Error',
+						name: 'neverError',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to return the response even when the status code is not 2xx',
+					},
+					{
+						displayName: 'Proxy',
+						name: 'proxy',
+						type: 'string',
+						default: '',
+						placeholder: 'http://proxy.example.com:8080',
+						description: 'HTTP proxy to use for this request',
+					},
+					{
+						displayName: 'Timeout',
+						name: 'timeout',
+						type: 'number',
+						default: 30000,
+						description: 'Time to wait for the initial response in milliseconds',
+					},
+				],
 			},
 			{
 				displayName: 'URL',
@@ -741,6 +1372,42 @@ export class AirProcess implements INodeType {
 				description: 'Whether to include a request body',
 			},
 			{
+				displayName: 'Body Content Type',
+				name: 'customBodyContentType',
+				type: 'options',
+				options: [
+					{
+						name: 'Form URLencoded',
+						value: 'formUrlencoded',
+					},
+					{
+						name: 'Form-Data',
+						value: 'formData',
+					},
+					{
+						name: 'JSON',
+						value: 'json',
+					},
+					{
+						name: 'N8n Binary File',
+						value: 'binaryFile',
+					},
+					{
+						name: 'Raw',
+						value: 'raw',
+					},
+				],
+				default: 'json',
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+					},
+				},
+				description: 'Content type to use for the custom POST body',
+			},
+			{
 				displayName: 'Body',
 				name: 'customBody',
 				type: 'json',
@@ -748,10 +1415,193 @@ export class AirProcess implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
 						customSendBody: [true],
+						customBodyContentType: ['json'],
 					},
 				},
 				description: 'JSON body sent to AirProcess',
+			},
+			{
+				displayName: 'Body Parameters',
+				name: 'customFormFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Parameter',
+				default: {
+					parameter: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['formUrlencoded'],
+					},
+				},
+				options: [
+					{
+						name: 'parameter',
+						displayName: 'Parameter',
+						values: [
+							{
+								displayName: 'Name',
+								name: 'name',
+								type: 'string',
+								default: '',
+							},
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+				],
+				description: 'Parameters to include in the URL-encoded body',
+			},
+			{
+				displayName: 'Body',
+				name: 'customFormDataFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Body Field',
+				default: {
+					bodyField: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['formData'],
+					},
+				},
+				options: [
+					{
+						name: 'bodyField',
+						displayName: 'Body Field',
+						values: [
+							{
+								displayName: 'Type',
+								name: 'type',
+								type: 'options',
+								options: [
+									{
+										name: 'Form Data',
+										value: 'formData',
+									},
+									{
+										name: 'N8n Binary File',
+										value: 'binaryFile',
+									},
+								],
+								default: 'formData',
+							},
+							{
+								displayName: 'Name',
+								name: 'name',
+								type: 'string',
+								default: '',
+							},
+							{
+								displayName: 'Input Data Field Name',
+								name: 'inputDataFieldName',
+								type: 'string',
+								default: 'data',
+								displayOptions: {
+									show: {
+										type: ['binaryFile'],
+									},
+								},
+								description: 'Binary property from the incoming item to attach to the form-data body',
+							},
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+								displayOptions: {
+									show: {
+										type: ['formData'],
+									},
+								},
+							},
+						],
+					},
+				],
+				description: 'Fields to include in the form-data body',
+			},
+			{
+				displayName: 'Input Data Field Name',
+				name: 'customBinaryInputDataFieldName',
+				type: 'string',
+				default: 'data',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['binaryFile'],
+					},
+				},
+				description: 'Name of the incoming binary property to send as the request body',
+			},
+			{
+				displayName: 'Content Type',
+				name: 'customBinaryContentType',
+				type: 'string',
+				default: 'application/octet-stream',
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['binaryFile'],
+					},
+				},
+				description: 'Content-Type header to use for the binary body',
+			},
+			{
+				displayName: 'Content Type',
+				name: 'customRawContentType',
+				type: 'string',
+				default: 'text/plain',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['raw'],
+					},
+				},
+				description: 'Content-Type header to use for the raw body',
+			},
+			{
+				displayName: 'Body',
+				name: 'customRawBody',
+				type: 'string',
+				typeOptions: {
+					rows: 5,
+				},
+				default: '',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['custom'],
+						operation: ['customGet', 'customPost'],
+						customSendBody: [true],
+						customBodyContentType: ['raw'],
+					},
+				},
+				description: 'Raw body content sent to AirProcess',
 			},
 			{
 				displayName: 'Model Name or ID',
@@ -898,6 +1748,41 @@ export class AirProcess implements INodeType {
 				description: 'Record identifier used in the path',
 			},
 			{
+				displayName: 'Body Content Type',
+				name: 'createBodyContentType',
+				type: 'options',
+				options: [
+					{
+						name: 'Form URLencoded',
+						value: 'formUrlencoded',
+					},
+					{
+						name: 'Form-Data',
+						value: 'formData',
+					},
+					{
+						name: 'JSON',
+						value: 'json',
+					},
+					{
+						name: 'N8n Binary File',
+						value: 'binaryFile',
+					},
+					{
+						name: 'Raw',
+						value: 'raw',
+					},
+				],
+				default: 'json',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+					},
+				},
+				description: 'Content type to use for the POST body',
+			},
+			{
 				displayName: 'Specify Body',
 				name: 'createBodyMode',
 				type: 'options',
@@ -916,6 +1801,7 @@ export class AirProcess implements INodeType {
 					show: {
 						resource: ['post'],
 						operation: ['createRecord'],
+						createBodyContentType: ['json'],
 					},
 				},
 				description: 'Choose whether to send raw JSON or build the body from fields',
@@ -930,6 +1816,7 @@ export class AirProcess implements INodeType {
 					show: {
 						resource: ['post'],
 						operation: ['createRecord'],
+						createBodyContentType: ['json'],
 						createBodyMode: ['json'],
 					},
 				},
@@ -950,6 +1837,7 @@ export class AirProcess implements INodeType {
 					show: {
 						resource: ['post'],
 						operation: ['createRecord'],
+						createBodyContentType: ['json'],
 						createBodyMode: ['fields'],
 					},
 				},
@@ -979,6 +1867,113 @@ export class AirProcess implements INodeType {
 					},
 				],
 				description: 'Build the body by selecting model fields and values',
+			},
+			{
+				displayName: 'Body Parameters',
+				name: 'createFormFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Parameter',
+				default: {
+					field: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+						createBodyContentType: ['formUrlencoded', 'formData'],
+					},
+				},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Field',
+						values: [
+							{
+								displayName: 'Field Name or ID',
+								name: 'fieldId',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getModelFields',
+									loadOptionsDependsOn: ['modelIdCreate', 'createFormFields.field'],
+								},
+								default: '',
+								description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+							},
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+				],
+				description: 'Build the body by selecting model fields and values',
+			},
+			{
+				displayName: 'Input Data Field Name',
+				name: 'createBinaryInputDataFieldName',
+				type: 'string',
+				default: 'data',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+						createBodyContentType: ['binaryFile'],
+					},
+				},
+				description: 'Name of the incoming binary property to send as the request body',
+			},
+			{
+				displayName: 'Content Type',
+				name: 'createBinaryContentType',
+				type: 'string',
+				default: 'application/octet-stream',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+						createBodyContentType: ['binaryFile'],
+					},
+				},
+				description: 'Content-Type header to use for the binary body',
+			},
+			{
+				displayName: 'Content Type',
+				name: 'createRawContentType',
+				type: 'string',
+				default: 'text/plain',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+						createBodyContentType: ['raw'],
+					},
+				},
+				description: 'Content-Type header to use for the raw body',
+			},
+			{
+				displayName: 'Body',
+				name: 'createRawBody',
+				type: 'string',
+				typeOptions: {
+					rows: 5,
+				},
+				default: '',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['createRecord'],
+						createBodyContentType: ['raw'],
+					},
+				},
+				description: 'Raw body content sent to AirProcess',
 			},
 			{
 				displayName: 'Specify Body',
