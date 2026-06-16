@@ -9,7 +9,7 @@ export class AirProcessApi implements ICredentialType {
 
 	icon = {
 		light: 'file:../icons/airprocess.svg',
-		dark: 'file:../icons/airprocess.dark.svg',
+		dark: 'file:../icons/airprocess.svg',
 	} as const;
 
 	properties: INodeProperties[] = [

@@ -324,7 +324,7 @@ export class AirProcess implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'AirProcess',
 		name: 'airProcess',
-		icon: { light: 'file:../../icons/airprocess.svg', dark: 'file:../../icons/airprocess.dark.svg' },
+		icon: { light: 'file:../../icons/airprocess.svg', dark: 'file:../../icons/airprocess-dark.svg' },
 		group: ['input'],
 		version: 1,
 		subtitle:
