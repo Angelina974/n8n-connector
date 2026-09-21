@@ -21,6 +21,7 @@ declare const URLSearchParams: new () => { append(name: string, value: string): 
 
 const AIRPROCESS_BASE_URL = 'https://app.airprocess.com';
 const AIRPROCESS_MODELS_URL = `${AIRPROCESS_BASE_URL}/model`;
+const AIRPROCESS_ACTIVE_VIEWS_URL = `${AIRPROCESS_BASE_URL}/command/views/activeForCurrentAccount`;
 const CUSTOM_URL_EXPRESSION =
 	'={{ $parameter.customUrl.startsWith("http") ? $parameter.customUrl : ($parameter.customUrl.startsWith("/") ? $parameter.customUrl : "/" + $parameter.customUrl) }}';
 const CUSTOM_BODY_EXPRESSION =
@@ -42,7 +43,14 @@ const RESOLVE_COLLECTION_VALUE_EXPRESSION =
  * Builds the API body from selected filter fields and pagination options.
  */
 const FIND_RECORDS_MONGO_BODY_EXPRESSION =
-	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); return { operation: "search", filterSyntax: "mongo", skip: Number($parameter.findSkip ?? 0), limit: Number($parameter.findLimit ?? 10), filter }; })() }}`;
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); const paginationOptions = $parameter.postRequestOptions ?? {}; return { operation: "search", filterSyntax: "mongo", skip: Number(paginationOptions.skip ?? $parameter.findSkip ?? 0), limit: Number(paginationOptions.limit ?? $parameter.findLimit ?? 10), filter }; })() }}`;
+
+/**
+ * n8n expression used by "Get Private View Data".
+ * Includes optional filter, sort, and selected fields only when configured.
+ */
+const GET_PRIVATE_VIEW_DATA_BODY_EXPRESSION =
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const body = { modelId: $parameter.modelIdViewData, viewId: $parameter.viewIdViewData }; const fields = (($parameter.viewDataFields && $parameter.viewDataFields.field) ? $parameter.viewDataFields.field : []).map((current) => resolveCollectionValue(current.fieldId)).filter((fieldId) => Boolean(fieldId)); if (fields.length > 0) { body.fields = fields; } if ($parameter.viewDataAddFilter) { const fieldId = resolveCollectionValue($parameter.viewDataFilterFieldId); if (fieldId) { body.filter = { type: "filter", fieldId, operator: resolveCollectionValue($parameter.viewDataFilterOperator), value: resolveCollectionValue($parameter.viewDataFilterValue) }; } } if ($parameter.viewDataAddSort) { const sort = typeof $parameter.viewDataSort === "string" ? JSON.parse($parameter.viewDataSort) : $parameter.viewDataSort; if (sort && (typeof sort !== "object" || Object.keys(sort).length > 0)) { body.sort = sort; } } const paginationOptions = $parameter.postRequestOptions ?? {}; if (paginationOptions.skip !== undefined) { body.skip = Number(paginationOptions.skip); } if (paginationOptions.limit !== undefined) { body.limit = Number(paginationOptions.limit); } return body; })() }}`;
 
 /**
  * n8n expression used by "Update a Record".
@@ -61,6 +69,22 @@ type AirProcessModel = {
 	modelId?: string;
 	ModelName?: string;
 	modelName?: string;
+};
+
+/**
+ * Minimal shape returned by AirProcess for private views.
+ */
+type AirProcessView = {
+	id?: string;
+	name?: string;
+	modelId?: string;
+	modelName?: string;
+};
+
+type AirProcessViewsResponse = {
+	items?: AirProcessView[];
+	hasMore?: boolean;
+	nextCursor?: string;
 };
 
 /**
@@ -218,6 +242,24 @@ function extractSingleFromResponse<T>(response: unknown): T | undefined {
 	}
 
 	return undefined;
+}
+
+/**
+ * Converts a private-view payload item into an n8n options item.
+ */
+function toViewOption(item: AirProcessView): INodePropertyOptions | null {
+	if (typeof item.id !== 'string' || item.id.length === 0) {
+		return null;
+	}
+
+	if (typeof item.name !== 'string' || item.name.length === 0) {
+		return null;
+	}
+
+	return {
+		name: item.name,
+		value: item.id,
+	};
 }
 
 function generateUuid(): string {
@@ -513,10 +555,28 @@ async function configureCustomTypedBodyRequest(
 		case 'json':
 		default: {
 			const bodyValue = this.getNodeParameter('customBody', {}) as IDataObject | string;
-			requestOptions.body =
+			const payload =
 				typeof bodyValue === 'string'
 					? (JSON.parse(bodyValue) as IDataObject)
 					: ((bodyValue ?? {}) as IDataObject);
+			const operation = this.getNodeParameter('operation', 'customPost') as string;
+			const paginationOptions = this.getNodeParameter(CUSTOM_REQUEST_OPTIONS_PARAMETER, {}) as {
+				skip?: number;
+				limit?: number;
+			};
+
+			requestOptions.body =
+				operation === 'customPost'
+					? {
+						...payload,
+						...(paginationOptions.skip !== undefined
+							? { skip: Number(paginationOptions.skip) }
+							: {}),
+						...(paginationOptions.limit !== undefined
+							? { limit: Number(paginationOptions.limit) }
+							: {}),
+					}
+					: payload;
 			headers['Content-Type'] = 'application/json';
 			break;
 		}
@@ -539,6 +599,14 @@ function buildHttpNodeLikeRequestOptions(
 		| typeof POST_REQUEST_OPTIONS_PARAMETER,
 ) {
 	return {
+		...(parameterName === CUSTOM_REQUEST_OPTIONS_PARAMETER
+			? {
+				qs: {
+					skip: `={{ $parameter.${parameterName}.skip ?? undefined }}` as unknown as number,
+					limit: `={{ $parameter.${parameterName}.limit ?? undefined }}` as unknown as number,
+				},
+			}
+			: {}),
 		encoding:
 			`={{ $parameter.${parameterName}.responseFormat === "file" ? "arraybuffer" : ($parameter.${parameterName}.responseFormat === "json" ? "json" : ($parameter.${parameterName}.responseFormat === "text" ? "text" : undefined)) }}` as unknown as IHttpRequestOptions['encoding'],
 		skipSslCertificateValidation: `={{ $parameter.${parameterName}.ignoreSslIssues ?? false }}` as unknown as boolean,
@@ -589,6 +657,72 @@ async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProce
 }
 
 /**
+ * Fetches all private views visible to the account. The API returns these in cursor pages.
+ */
+async function fetchActiveViews(loadOptions: ILoadOptionsFunctions): Promise<AirProcessView[]> {
+	const credentials = (await loadOptions.getCredentials('airProcessApi')) as { token?: unknown };
+	const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
+	const views: AirProcessView[] = [];
+	let cursor: string | undefined;
+
+	for (let page = 0; page < 50; page++) {
+		const response = await loadOptions.helpers.httpRequestWithAuthentication.call(
+			loadOptions,
+			'airProcessApi',
+			{
+				method: 'POST',
+				url: AIRPROCESS_ACTIVE_VIEWS_URL,
+				body: {
+					limit: 100,
+					...(cursor ? { cursor } : {}),
+				},
+				json: true,
+				headers: token.length > 0 ? { Authorization: `Bearer ${token}` } : undefined,
+			},
+		);
+
+		views.push(...extractListFromResponse<AirProcessView>(response));
+		const responseData = extractSingleFromResponse<AirProcessViewsResponse>(response);
+		cursor =
+			responseData?.hasMore === true && typeof responseData.nextCursor === 'string'
+				? responseData.nextCursor
+				: undefined;
+
+		if (!cursor) {
+			break;
+		}
+	}
+
+	return views;
+}
+
+/**
+ * Loads private views belonging to the selected model.
+ */
+async function getModelViewOptions(loadOptions: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const selectedModelId = loadOptions.getCurrentNodeParameter('modelIdViewData') as string;
+	if (!selectedModelId) {
+		return [];
+	}
+
+	const models = await fetchModels(loadOptions);
+	const resolvedModelId = resolveModelId(models, selectedModelId);
+	const seen = new Set<string>();
+
+	return (await fetchActiveViews(loadOptions))
+		.filter((view) => view.modelId === selectedModelId || view.modelId === resolvedModelId)
+		.map(toViewOption)
+		.filter((option): option is INodePropertyOptions => option !== null)
+		.filter((option) => {
+			if (seen.has(option.value as string)) {
+				return false;
+			}
+			seen.add(option.value as string);
+			return true;
+		});
+}
+
+/**
  * Shared loader used by dynamic field dropdowns ("Create" and "Find records").
  *
  * @param loadOptions n8n load-options context.
@@ -598,8 +732,12 @@ async function fetchModels(loadOptions: ILoadOptionsFunctions): Promise<AirProce
  */
 async function getModelFieldOptions(
 	loadOptions: ILoadOptionsFunctions,
-	modelIdParameterName: 'modelIdCreate' | 'modelIdFind' | 'modelIdPatch',
-	selectedFieldsParameterName: 'createFields.field' | 'findFields.field' | 'updateFields.field',
+	modelIdParameterName: 'modelIdCreate' | 'modelIdFind' | 'modelIdPatch' | 'modelIdViewData',
+	selectedFieldsParameterName:
+		| 'createFields.field'
+		| 'findFields.field'
+		| 'updateFields.field'
+		| 'viewDataFields.field',
 ): Promise<INodePropertyOptions[]> {
 	const modelId = loadOptions.getCurrentNodeParameter(modelIdParameterName) as string;
 	if (!modelId) {
@@ -661,6 +799,12 @@ export class AirProcess implements INodeType {
 			async getModelFieldsForUpdate(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return await getModelFieldOptions(this, 'modelIdPatch', 'updateFields.field');
 			},
+			async getModelViews(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return await getModelViewOptions(this);
+			},
+			async getModelFieldsForViewData(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return await getModelFieldOptions(this, 'modelIdViewData', 'viewDataFields.field');
+			},
 		},
 	};
 
@@ -671,7 +815,7 @@ export class AirProcess implements INodeType {
 		group: ['input'],
 		version: 1,
 		subtitle:
-			'={{$parameter["resource"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdFind"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
+			'={{$parameter["resource"] + ": " + ($parameter["modelIdGet"] || $parameter["modelIdCreate"] || $parameter["modelIdFind"] || $parameter["modelIdViewData"] || $parameter["modelIdPatch"] || $parameter["modelIdDelete"] || "")}}',
 		description: 'Interact with the AirProcess API grouped by HTTP method',
 		defaults: {
 			name: 'AirProcess',
@@ -736,7 +880,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '=/model/{{$parameter.modelIdGetOneModel}}',
+								url: '=/model/{{$parameter.modelIdGetOneModel}}?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -751,7 +895,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '=/{{$parameter.modelIdGet}}/{{$parameter.recordIdGet}}',
+								url: '=/{{$parameter.modelIdGet}}/{{$parameter.recordIdGet}}?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -766,7 +910,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '/application',
+								url: '=/application?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -781,7 +925,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '/group',
+								url: '=/group?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -796,7 +940,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '/model',
+								url: '=/model?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -811,7 +955,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '=/{{$parameter.modelIdGet}}',
+								url: '=/{{$parameter.modelIdGet}}?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -826,7 +970,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '/account',
+								url: '=/account?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -841,7 +985,7 @@ export class AirProcess implements INodeType {
 						routing: {
 							request: {
 								method: 'GET',
-								url: '/workspace',
+								url: '=/workspace?skip={{$parameter.getRequestOptions.skip ?? 0}}&limit={{$parameter.getRequestOptions.limit ?? 50}}',
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 								},
@@ -892,6 +1036,23 @@ export class AirProcess implements INodeType {
 								url: '=/{{$parameter.modelIdFind}}',
 								// Build a mongo search payload from selected filters and pagination values.
 								body: FIND_RECORDS_MONGO_BODY_EXPRESSION,
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+									'Content-Type': 'application/json',
+								},
+								...buildHttpNodeLikeRequestOptions(POST_REQUEST_OPTIONS_PARAMETER),
+							},
+						},
+					},
+					{
+						name: 'Get Private View Data',
+						value: 'getPrivateViewData',
+						action: 'Get data from a private view',
+						routing: {
+							request: {
+								method: 'POST',
+								url: '/command/views/getViewData',
+								body: GET_PRIVATE_VIEW_DATA_BODY_EXPRESSION,
 								headers: {
 									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
 									'Content-Type': 'application/json',
@@ -1110,6 +1271,16 @@ export class AirProcess implements INodeType {
 						description: 'Whether to return the full response instead of only the body',
 					},
 					{
+						displayName: 'Limit',
+						name: 'limit',
+						type: 'number',
+						typeOptions: {
+							minValue: 1,
+						},
+						default: 50,
+						description: 'Max number of results to return',
+					},
+					{
 						displayName: 'Max Redirects',
 						name: 'maxRedirects',
 						type: 'number',
@@ -1174,6 +1345,13 @@ export class AirProcess implements INodeType {
 						description: 'How to interpret the response body',
 					},
 					{
+						displayName: 'Skip',
+						name: 'skip',
+						type: 'number',
+						default: 0,
+						description: 'Number of records to skip for pagination',
+					},
+					{
 						displayName: 'Timeout',
 						name: 'timeout',
 						type: 'number',
@@ -1216,6 +1394,16 @@ export class AirProcess implements INodeType {
 						description: 'Whether to return the full response instead of only the body',
 					},
 					{
+						displayName: 'Limit',
+						name: 'limit',
+						type: 'number',
+						typeOptions: {
+							minValue: 1,
+						},
+						default: 50,
+						description: 'Max number of results to return',
+					},
+					{
 						displayName: 'Max Redirects',
 						name: 'maxRedirects',
 						type: 'number',
@@ -1241,6 +1429,13 @@ export class AirProcess implements INodeType {
 						default: '',
 						placeholder: 'http://proxy.example.com:8080',
 						description: 'HTTP proxy to use for this request',
+					},
+					{
+						displayName: 'Skip',
+						name: 'skip',
+						type: 'number',
+						default: 0,
+						description: 'Number of records to skip for pagination',
 					},
 					{
 						displayName: 'Timeout',
@@ -1285,6 +1480,16 @@ export class AirProcess implements INodeType {
 						description: 'Whether to return the full response instead of only the body',
 					},
 					{
+						displayName: 'Limit',
+						name: 'limit',
+						type: 'number',
+						typeOptions: {
+							minValue: 1,
+						},
+						default: 50,
+						description: 'Max number of results to return',
+					},
+					{
 						displayName: 'Max Redirects',
 						name: 'maxRedirects',
 						type: 'number',
@@ -1310,6 +1515,13 @@ export class AirProcess implements INodeType {
 						default: '',
 						placeholder: 'http://proxy.example.com:8080',
 						description: 'HTTP proxy to use for this request',
+					},
+					{
+						displayName: 'Skip',
+						name: 'skip',
+						type: 'number',
+						default: 0,
+						description: 'Number of records to skip for pagination',
 					},
 					{
 						displayName: 'Timeout',
@@ -1684,6 +1896,41 @@ export class AirProcess implements INodeType {
 					show: {
 						resource: ['patch'],
 						operation: ['updateRecord'],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+			},
+			{
+				displayName: 'Model Name or ID',
+				name: 'modelIdViewData',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModels',
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+			},
+			{
+				displayName: 'Private View Name or ID',
+				name: 'viewIdViewData',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModelViews',
+					loadOptionsDependsOn: ['modelIdViewData'],
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
 					},
 				},
 				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
@@ -2167,6 +2414,134 @@ export class AirProcess implements INodeType {
 					},
 				],
 				description: 'Build the mongo filter by selecting model fields and values',
+			},
+			{
+				displayName: 'Fields',
+				name: 'viewDataFields',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Field',
+				default: {
+					field: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+					},
+				},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Field',
+						values: [
+							{
+								displayName: 'Field Name or ID',
+								name: 'fieldId',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getModelFieldsForViewData',
+									loadOptionsDependsOn: ['modelIdViewData', 'viewDataFields.field'],
+								},
+								default: '',
+								description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+							},
+						],
+					},
+				],
+				description: 'Optional fields to return. Leave empty to let the private view use its default fields.',
+			},
+			{
+				displayName: 'Add Filter',
+				name: 'viewDataAddFilter',
+				type: 'boolean',
+				default: false,
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+					},
+				},
+				description: 'Whether to filter the private-view data',
+			},
+			{
+				displayName: 'Filter Field Name or ID',
+				name: 'viewDataFilterFieldId',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModelFieldsForViewData',
+					loadOptionsDependsOn: ['modelIdViewData'],
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+						viewDataAddFilter: [true],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+			},
+			{
+				displayName: 'Filter Operator',
+				name: 'viewDataFilterOperator',
+				type: 'string',
+				required: true,
+				default: '=',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+						viewDataAddFilter: [true],
+					},
+				},
+				description: 'AirProcess filter operator, for example =, !=, >, or contains',
+			},
+			{
+				displayName: 'Filter Value',
+				name: 'viewDataFilterValue',
+				type: 'string',
+				required: true,
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+						viewDataAddFilter: [true],
+					},
+				},
+				description: 'Value compared by the filter',
+			},
+			{
+				displayName: 'Add Sort',
+				name: 'viewDataAddSort',
+				type: 'boolean',
+				default: false,
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+					},
+				},
+				description: 'Whether to send a sort object to AirProcess',
+			},
+			{
+				displayName: 'Sort (JSON)',
+				name: 'viewDataSort',
+				type: 'json',
+				required: true,
+				default: '{\n  "fieldId": "example",\n  "direction": "asc"\n}',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['getPrivateViewData'],
+						viewDataAddSort: [true],
+					},
+				},
+				description: 'Optional sort object sent in the "sort" property. Use the format expected by your AirProcess view.',
 			},
 		],
 	};

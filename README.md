@@ -6,7 +6,7 @@ Community n8n node for AirProcess.
 
 - One node: `AirProcess`
 - Route families grouped by HTTP method: `GET`, `POST`, `PATCH`, `DELETE`, `Custom`
-- Dynamic model and field dropdowns loaded from AirProcess (`/model`)
+- Dynamic model, private-view, and field dropdowns loaded from AirProcess
 
 ## Supported operations
 
@@ -35,6 +35,10 @@ Community n8n node for AirProcess.
     - `skip`
     - `limit`
     - `filter` from fields or raw JSON (depending on selected mode)
+- `Get Private View Data`: `POST /command/views/getViewData`
+  - Select the model, then a private view belonging to that model
+  - Optionally filter by a model field, choose fields to return, and send a sort object
+  - Uses the standard `skip` and `limit` options for paging
 
 ### PATCH
 
@@ -51,6 +55,22 @@ Community n8n node for AirProcess.
 - Accepts relative path or full URL
 - Optional custom headers (`Send Headers`)
 - Optional request body (`Send Body`)
+
+## Pagination
+
+AirProcess supports offset paging through `skip` and `limit`. Add these number options from the node's **Options** menu:
+
+- `Skip`: number of records to skip (default: `0`)
+- `Limit`: maximum number of records to return (default: `50`)
+
+The connector sends the values according to the route type:
+
+- Native `GET` routes: as URL query parameters, for example `/{MODEL_ID}?skip=100&limit=50`
+- `Find Records (Mongo)` and `Get Private View Data`: in the JSON body
+- Custom `GET`: as URL query parameters
+- Custom `POST` with JSON body: merged into the JSON body
+
+For `Find Records (Mongo)`, values added in **Options** take precedence over the operation's existing `Skip` and `Limit` fields.
 
 ## Example: Find Records (Mongo)
 
@@ -72,6 +92,32 @@ You can build the same `filter` either:
 
 - with `Using Fields Below`
 - or with `Specify Filters = JSON`
+
+## Example: Get Private View Data
+
+The `Get Private View Data` operation builds a request such as:
+
+```json
+{
+  "modelId": "MODEL_ID",
+  "viewId": "PRIVATE_VIEW_ID",
+  "filter": {
+    "type": "filter",
+    "fieldId": "FIELD_ID",
+    "operator": "=",
+    "value": "Example"
+  },
+  "sort": [
+    {
+      "fieldId": "FIELD_ID",
+      "direction": "asc"
+    }
+  ],
+  "fields": ["FIELD_ID_1", "FIELD_ID_2"],
+  "skip": 0,
+  "limit": 50
+}
+```
 
 ## Authentication
 
