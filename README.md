@@ -171,10 +171,18 @@ npm run build
 npm run lint
 ```
 
+## Version
+
+These commands update `package.json` and `package-lock.json` together, without creating a Git commit or tag:
+
+- `npm run version:minor`: increments the last number (`0.1.24` → `0.1.25`).
+- `npm run version:feature`: increments the middle number (`0.1.24` → `0.2.0`).
+- `npm run version:major`: increments the first number (`0.1.24` → `1.0.0`).
+
 ## Publish on npm (official/verified path)
 
 1. Create an npm automation token and add it in your GitHub repository secrets as `NPM_TOKEN`.
-2. Bump the package version in `package.json`.
+2. Bump the package version (for example, `npm run version:minor`).
 3. Commit and push your changes to GitHub.
 4. Create a GitHub Release, or run the `Publish n8n Node to npm` workflow manually from the Actions tab.
 5. GitHub Actions publishes the package from a GitHub-hosted runner with npm provenance enabled.
