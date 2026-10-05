@@ -35,6 +35,9 @@ Community n8n node for AirProcess.
     - `skip`
     - `limit`
     - `filter` from fields or raw JSON (depending on selected mode)
+- `Find Records by ID`: `POST /{MODEL_ID}`
+  - Select the model, then add record IDs individually or provide a JSON array.
+  - Sends `{ "operation": "search", "ids": ["RECORD_ID_1", "RECORD_ID_2"] }`.
 - `Get Private View Data`: `POST /command/views/getViewData`
   - Select the model, then a private view belonging to that model
   - Optionally filter by a model field, choose fields to return, and send a sort object
@@ -92,6 +95,29 @@ You can build the same `filter` either:
 
 - with `Using Fields Below`
 - or with `Specify Filters = JSON`
+
+## Example: Find Records by ID
+
+The `Find Records by ID` operation sends this body:
+
+```json
+{
+  "operation": "search",
+  "ids": [
+    "ec9e25bc-98c3-4bdf-a8ac-e0eaaca07832",
+    "abb59191-78a9-47d8-a545-1b442c1ae5a9"
+  ]
+}
+```
+
+In the node, select `Specify Record IDs = JSON` to paste the `ids` value directly as an array:
+
+```json
+[
+  "ec9e25bc-98c3-4bdf-a8ac-e0eaaca07832",
+  "abb59191-78a9-47d8-a545-1b442c1ae5a9"
+]
+```
 
 ## Example: Get Private View Data
 

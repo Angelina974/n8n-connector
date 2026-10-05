@@ -46,6 +46,13 @@ const FIND_RECORDS_MONGO_BODY_EXPRESSION =
 	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const mode = $parameter.findFilterMode ?? "fields"; const filter = mode === "json" ? (typeof $parameter.findFilterJson === "string" ? JSON.parse($parameter.findFilterJson) : ($parameter.findFilterJson ?? {})) : (($parameter.findFields && $parameter.findFields.field) ? $parameter.findFields.field : []).reduce((acc, current) => { const fieldId = resolveCollectionValue(current.fieldId); if (fieldId) { acc[fieldId] = resolveCollectionValue(current.value); } return acc; }, {}); const paginationOptions = $parameter.postRequestOptions ?? {}; return { operation: "search", filterSyntax: "mongo", skip: Number(paginationOptions.skip ?? $parameter.findSkip ?? 0), limit: Number(paginationOptions.limit ?? $parameter.findLimit ?? 10), filter }; })() }}`;
 
 /**
+ * n8n expression used by "Find Records by ID".
+ * Builds the API body from the record IDs entered in the node.
+ */
+const FIND_RECORDS_BY_ID_BODY_EXPRESSION =
+	`={{ (() => { const resolveCollectionValue = ${RESOLVE_COLLECTION_VALUE_EXPRESSION}; const mode = $parameter.findRecordsByIdMode ?? "fields"; const rawIds = mode === "json" ? (typeof $parameter.findRecordsByIdJson === "string" ? JSON.parse($parameter.findRecordsByIdJson) : ($parameter.findRecordsByIdJson ?? [])) : (($parameter.findRecordsByIdIds && $parameter.findRecordsByIdIds.id) ? $parameter.findRecordsByIdIds.id : []).map((current) => resolveCollectionValue(current.value)); const ids = Array.isArray(rawIds) ? rawIds.filter((id) => Boolean(id)) : []; return { operation: "search", ids }; })() }}`;
+
+/**
  * n8n expression used by "Get Private View Data".
  * Includes optional filter, sort, and selected fields only when configured.
  */
@@ -1045,6 +1052,23 @@ export class AirProcess implements INodeType {
 						},
 					},
 					{
+						name: 'Find Records by ID',
+						value: 'findRecordsById',
+						action: 'Find records by ID',
+						routing: {
+							request: {
+								method: 'POST',
+								url: '=/{{$parameter.modelIdFindById}}',
+								body: FIND_RECORDS_BY_ID_BODY_EXPRESSION,
+								headers: {
+									Authorization: AUTHORIZATION_HEADER_EXPRESSION,
+									'Content-Type': 'application/json',
+								},
+								...buildHttpNodeLikeRequestOptions(POST_REQUEST_OPTIONS_PARAMETER),
+							},
+						},
+					},
+					{
 						name: 'Get Private View Data',
 						value: 'getPrivateViewData',
 						action: 'Get data from a private view',
@@ -1902,6 +1926,23 @@ export class AirProcess implements INodeType {
 			},
 			{
 				displayName: 'Model Name or ID',
+				name: 'modelIdFindById',
+				type: 'options',
+				required: true,
+				typeOptions: {
+					loadOptionsMethod: 'getModels',
+				},
+				default: '',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsById'],
+					},
+				},
+				description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+			},
+			{
+				displayName: 'Model Name or ID',
 				name: 'modelIdViewData',
 				type: 'options',
 				required: true,
@@ -2414,6 +2455,81 @@ export class AirProcess implements INodeType {
 					},
 				],
 				description: 'Build the mongo filter by selecting model fields and values',
+			},
+			{
+				displayName: 'Specify Record IDs',
+				name: 'findRecordsByIdMode',
+				type: 'options',
+				options: [
+					{
+						name: 'Using Fields Below',
+						value: 'fields',
+					},
+					{
+						name: 'JSON',
+						value: 'json',
+					},
+				],
+				default: 'fields',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsById'],
+					},
+				},
+				description: 'Choose whether to enter IDs individually or send a JSON array',
+			},
+			{
+				displayName: 'Record IDs',
+				name: 'findRecordsByIdIds',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				placeholder: 'Add Record ID',
+				default: {
+					id: [],
+				},
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsById'],
+						findRecordsByIdMode: ['fields'],
+					},
+				},
+				options: [
+					{
+						name: 'id',
+						displayName: 'Record ID',
+						values: [
+							{
+								displayName: 'Record ID',
+								name: 'value',
+								type: 'string',
+								required: true,
+								default: '',
+								description: 'Identifier of the record to find',
+							},
+						],
+					},
+				],
+				description: 'Add one or more record identifiers to retrieve',
+			},
+			{
+				displayName: 'Record IDs (JSON)',
+				name: 'findRecordsByIdJson',
+				type: 'json',
+				required: true,
+				default:
+					'[\n  "ec9e25bc-98c3-4bdf-a8ac-e0eaaca07832",\n  "abb59191-78a9-47d8-a545-1b442c1ae5a9"\n]',
+				displayOptions: {
+					show: {
+						resource: ['post'],
+						operation: ['findRecordsById'],
+						findRecordsByIdMode: ['json'],
+					},
+				},
+				description: 'JSON array of record identifiers to retrieve',
 			},
 			{
 				displayName: 'Fields',
